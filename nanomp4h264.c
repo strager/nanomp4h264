@@ -138,6 +138,7 @@ void nanomp4h264_open(nanomp4h264_t *enc, const nanomp4h264_config_t *config,
     enc->_mb_height = enc->_padded_height / 16;
     enc->_crop_right = enc->_padded_width - enc->_width;
     enc->_crop_bottom = enc->_padded_height - enc->_height;
+    enc->_frame_nal_size = (384 + 2) * enc->_mb_width * enc->_mb_height + 3;
 
     enc->_file = fopen(filepath, "wb");
     if (!enc->_file) {
@@ -173,10 +174,9 @@ void nanomp4h264_write_frame(nanomp4h264_t *enc, const uint8_t *data,
 
     FILE *f = enc->_file;
     int mb_count = enc->_mb_width * enc->_mb_height;
-    uint32_t nal_len = 386 * mb_count + 3;
     uint32_t bytes_written = 0;
 
-    WRITE_DYNAMIC({ BE32(nal_len) });
+    WRITE_DYNAMIC({ BE32(enc->_frame_nal_size) });
 
     // NAL header (IDR slice, nal_ref_idc=3, nal_unit_type=5) + slice header + first MB header
     // Slice header bits:
@@ -232,11 +232,8 @@ void nanomp4h264_write_frame(nanomp4h264_t *enc, const uint8_t *data,
     fwrite(&trailing, 1, 1, f);
     bytes_written += 1;
 
-    assert(bytes_written == nal_len);
+    assert(bytes_written == enc->_frame_nal_size);
 
-    if (enc->_frame_count == 0) {
-        enc->_frame_nal_size = nal_len;
-    }
     enc->_frame_count++;
 }
 

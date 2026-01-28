@@ -171,40 +171,39 @@ void nanomp4h264_write_frame(nanomp4h264_t *enc, const uint8_t *data,
 
     write_be32(f, nal_len);
 
-    // NAL header: IDR slice (type 5)
-    fputc(0x65, f);
-    bytes_written += 1;
+    // NAL header (IDR slice, nal_ref_idc=3, nal_unit_type=5) + slice header + first MB header
+    // Slice header bits:
+    //   1       ue(0)  first_mb_in_slice
+    //   011     ue(2)  slice_type = I
+    //   1       ue(0)  pic_parameter_set_id
+    //   0000    u(4)   frame_num (log2_max_frame_num=4)
+    //   1       ue(0)  idr_pic_id
+    //   0       u(1)   no_output_of_prior_pics_flag
+    //   0       u(1)   long_term_reference_flag
+    //   1       se(0)  slice_qp_delta
+    // First MB header bits:
+    //   000011010  ue(25)  mb_type = I_PCM
+    //   00         pcm_alignment_zero_bit (pad to byte)
+    static const uint8_t slice_and_first_mb[] = {
+        0x65,  // NAL header
+        0xB8,  // 1_011_1_000: ue(0), ue(2), ue(0), frame_num[3:1]
+        0x48,  // 0_1_0_0_1_000: frame_num[0], ue(0), 0, 0, se(0), ue(25)[8:6]
+        0x68,  // 0_11010_00: ue(25)[5:0], alignment
+    };
+    fwrite(slice_and_first_mb, 1, sizeof(slice_and_first_mb), f);
+    bytes_written += sizeof(slice_and_first_mb);
 
-    // Slice header
-    uint8_t slice_hdr[32];
-    bitstream_t bs;
-    bs_init(&bs, slice_hdr, sizeof(slice_hdr));
-    bs_write_ue(&bs, 0);  // first_mb_in_slice
-    bs_write_ue(&bs, 2);  // slice_type = I
-    bs_write_ue(&bs, 0);  // pic_parameter_set_id
-    bs_write_bits(&bs, 0, 4);  // frame_num = 0 (always 0 for IDR, log2_max=4)
-    bs_write_ue(&bs, 0);  // idr_pic_id (constant for uniform sample sizes)
-    // dec_ref_pic_marking (required since nal_ref_idc != 0)
-    bs_write_bits(&bs, 0, 1);  // no_output_of_prior_pics_flag
-    bs_write_bits(&bs, 0, 1);  // long_term_reference_flag
-    bs_write_se(&bs, 0);  // slice_qp_delta
+    // Subsequent MB headers: ue(25) + alignment = 0x0D 0x00
+    // 00001101 0_0000000: ue(25), alignment
+    static const uint8_t mb_hdr[] = {0x0D, 0x00};
 
-    // Continue bitstream for macroblocks
-    uint8_t mb_buf[512];
     uint8_t mb_yuv[384];  // 256 Y + 64 Cb + 64 Cr
 
     for (int mb = 0; mb < mb_count; mb++) {
-        // For first MB, continue from slice header bitstream; otherwise fresh buffer
         if (mb != 0) {
-            bs_init(&bs, mb_buf, sizeof(mb_buf));
+            fwrite(mb_hdr, 1, sizeof(mb_hdr), f);
+            bytes_written += sizeof(mb_hdr);
         }
-
-        bs_write_ue(&bs, 25);  // mb_type = I_PCM
-        bs_byte_align(&bs);
-
-        int hdr_len = bs_pos(&bs);
-        fwrite(bs.buf, 1, hdr_len, f);
-        bytes_written += hdr_len;
 
         // Convert this macroblock from RGB to YUV420 on-the-fly
         int mb_x = mb % enc->_mb_width;

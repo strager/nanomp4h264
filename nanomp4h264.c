@@ -66,12 +66,6 @@ static int bs_pos(bitstream_t *bs) {
     return (int)(bs->buf - bs->start);
 }
 
-// Big-endian writer
-static void write_be32(FILE *f, uint32_t v) {
-    uint8_t b[4] = {v >> 24, v >> 16, v >> 8, v};
-    fwrite(b, 1, 4, f);
-}
-
 // RGB to YUV420 for a single 16x16 macroblock
 static void rgb_to_yuv420_mb(const uint8_t *rgb, int rgb_w, int rgb_h,
                              int mb_x, int mb_y,
@@ -115,6 +109,19 @@ static void rgb_to_yuv420_mb(const uint8_t *rgb, int rgb_w, int rgb_h,
     }
 }
 
+#define CONCAT(x, y) CONCAT_IMPL(x, y)
+#define CONCAT_IMPL(x, y) x##y
+
+#define WRITE_CONST(...) WRITE_CONST_IMPL(CONCAT(data_, __COUNTER__), __VA_ARGS__)
+#define WRITE_CONST_IMPL(var_name, ...) \
+    static const uint8_t var_name[] = __VA_ARGS__; \
+    fwrite(var_name, 1, sizeof(var_name), f)
+
+#define WRITE_DYNAMIC(...) WRITE_DYNAMIC_IMPL(CONCAT(data_, __COUNTER__), __VA_ARGS__)
+#define WRITE_DYNAMIC_IMPL(var_name, ...) \
+    uint8_t var_name[] = __VA_ARGS__; \
+    fwrite(var_name, 1, sizeof(var_name), f)
+
 void nanomp4h264_open(nanomp4h264_t *enc, const nanomp4h264_config_t *config,
                       const char *filepath) {
     memset(enc, 0, sizeof(*enc));
@@ -140,17 +147,22 @@ void nanomp4h264_open(nanomp4h264_t *enc, const nanomp4h264_config_t *config,
 
     FILE *f = enc->_file;
 
-    // Write ftyp box (28 bytes)
-    write_be32(f, 28);           // size
-    fwrite("ftyp", 1, 4, f);     // type
-    fwrite("isom", 1, 4, f);     // major_brand
-    write_be32(f, 0x200);        // minor_version
-    fwrite("isomavc1mp41", 1, 12, f);  // compatible_brands
+    WRITE_CONST({
+        // ftyp
+        BE32(28),           // size
+        'f', 't', 'y', 'p', // type
+        'i', 's', 'o', 'm', // major_brand
+        BE32(0x200),        // minor_version
+        'i', 's', 'o', 'm', // compatible_brands[0]
+        'a', 'v', 'c', '1', // compatible_brands[1]
+        'm', 'p', '4', '1', // compatible_brands[2]
 
-    // Record mdat position and write placeholder
-    enc->_mdat_start_pos = ftell(f);
-    write_be32(f, 0);            // placeholder size
-    fwrite("mdat", 1, 4, f);
+        // mdat
+        // mdat_start_pos will be here.
+        BE32(0),            // size
+        'm', 'd', 'a', 't', // type
+    });
+    enc->_mdat_start_pos = ftell(f) - 8;
 }
 
 void nanomp4h264_write_frame(nanomp4h264_t *enc, const uint8_t *data,
@@ -164,7 +176,7 @@ void nanomp4h264_write_frame(nanomp4h264_t *enc, const uint8_t *data,
     uint32_t nal_len = 386 * mb_count + 3;
     uint32_t bytes_written = 0;
 
-    write_be32(f, nal_len);
+    WRITE_DYNAMIC({ BE32(nal_len) });
 
     // NAL header (IDR slice, nal_ref_idc=3, nal_unit_type=5) + slice header + first MB header
     // Slice header bits:
@@ -331,19 +343,6 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
     uint32_t trak_size = 8 + TKHD_SIZE + mdia_size;
     enum { MVHD_SIZE = 108 };
     uint32_t moov_size = 8 + MVHD_SIZE + trak_size;
-
-#define CONCAT(x, y) CONCAT_IMPL(x, y)
-#define CONCAT_IMPL(x, y) x##y
-
-#define WRITE_CONST(...) WRITE_CONST_IMPL(CONCAT(data_, __COUNTER__), __VA_ARGS__)
-#define WRITE_CONST_IMPL(var_name, ...) \
-    static const uint8_t var_name[] = __VA_ARGS__; \
-    fwrite(var_name, 1, sizeof(var_name), f)
-
-#define WRITE_DYNAMIC(...) WRITE_DYNAMIC_IMPL(CONCAT(data_, __COUNTER__), __VA_ARGS__)
-#define WRITE_DYNAMIC_IMPL(var_name, ...) \
-    uint8_t var_name[] = __VA_ARGS__; \
-    fwrite(var_name, 1, sizeof(var_name), f)
 
     WRITE_DYNAMIC({
         // moov

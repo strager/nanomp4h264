@@ -186,32 +186,22 @@ void nanomp4h264_write_frame(nanomp4h264_t *enc, const uint8_t *data,
     bs_write_bits(&bs, 0, 1);  // long_term_reference_flag
     bs_write_se(&bs, 0);  // slice_qp_delta
 
-    int slice_hdr_len = bs_pos(&bs);
-    int slice_hdr_bits = bs.byte_pos * 8 + (8 - bs.bit_pos);
-
-    fwrite(slice_hdr, 1, slice_hdr_len, f);
-
     // Continue bitstream for macroblocks
     uint8_t mb_buf[512];
     uint8_t mb_yuv[384];  // 256 Y + 64 Cb + 64 Cr
     int mb_count = enc->_mb_width * enc->_mb_height;
 
     for (int mb = 0; mb < mb_count; mb++) {
-        bs_init(&bs, mb_buf, sizeof(mb_buf));
-
-        // Restore partial byte from slice header (first MB only)
-        if (mb == 0 && slice_hdr_bits % 8 != 0) {
-            // Seek back and rewrite from partial point
-            fseek(f, -1, SEEK_CUR);
-            bs.buf[0] = slice_hdr[slice_hdr_len - 1];
-            bs.bit_pos = 8 - (slice_hdr_bits % 8);
+        // For first MB, continue from slice header bitstream; otherwise fresh buffer
+        if (mb != 0) {
+            bs_init(&bs, mb_buf, sizeof(mb_buf));
         }
 
         bs_write_ue(&bs, 25);  // mb_type = I_PCM
         bs_byte_align(&bs);
 
         int hdr_len = bs_pos(&bs);
-        fwrite(mb_buf, 1, hdr_len, f);
+        fwrite(bs.buf, 1, hdr_len, f);
 
         // Convert this macroblock from RGB to YUV420 on-the-fly
         int mb_x = mb % enc->_mb_width;

@@ -213,17 +213,15 @@ void nanomp4h264_write_frame(nanomp4h264_t *enc, const uint8_t *data,
         int mb_x = mb % enc->_mb_width;
         int mb_y = mb / enc->_mb_width;
         uint8_t *y_out = mb_yuv;
-        uint8_t *cb_out = mb_yuv + 256;
-        uint8_t *cr_out = mb_yuv + 256 + 64;
+        uint8_t *cb_out = mb_yuv + 16*16;
+        uint8_t *cr_out = cb_out + 8*8;
 
         rgb_to_yuv420_mb(data, enc->_width, enc->_height, mb_x, mb_y,
                          y_out, cb_out, cr_out);
 
         // Write raw samples: 256 Y, 64 Cb, 64 Cr
-        fwrite(y_out, 1, 256, f);
-        fwrite(cb_out, 1, 64, f);
-        fwrite(cr_out, 1, 64, f);
-        bytes_written += 384;
+        fwrite(mb_yuv, 1, sizeof(mb_yuv), f);
+        bytes_written += sizeof(mb_yuv);
     }
 
     // RBSP trailing bits (stop bit + alignment)

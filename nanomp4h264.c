@@ -8,6 +8,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+// Macros to expand values to big-endian bytes in array initializers
+#define BE32(x) ((x) >> 24) & 0xFF, ((x) >> 16) & 0xFF, ((x) >> 8) & 0xFF, (x) & 0xFF
+#define BE16(x) ((x) >> 8) & 0xFF, (x) & 0xFF
+
 // Bitstream writer for Exp-Golomb encoding
 typedef struct {
     uint8_t *buf;
@@ -322,74 +326,99 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
 
     // Calculate box sizes (bottom-up)
     uint32_t stss_size = 16 + enc->_frame_count * 4;
-    uint32_t stco_size = 16 + 4;
-    uint32_t stsz_size = 20 + 0;  // Using constant sample_size
-    uint32_t stsc_size = 16 + 12;
-    uint32_t stts_size = 16 + 8;
+    enum { STCO_SIZE = 20 };
+    enum { STSZ_SIZE = 20 };
+    enum { STSC_SIZE = 28 };
+    enum { STTS_SIZE = 24 };
     uint32_t avcC_size = 8 + 8 + sps_len + 3 + pps_len;  // header + config(6) + sps_len_field(2) + sps + numPPS(1) + pps_len_field(2) + pps
     uint32_t avc1_size = 8 + 78 + avcC_size;
     uint32_t stsd_size = 8 + 8 + avc1_size;
-    uint32_t stbl_size = 8 + stsd_size + stts_size + stsc_size + stsz_size + stco_size + stss_size;
-    uint32_t dref_size = 8 + 4 + 4 + 12;  // header + version/flags + entry_count + url entry
-    uint32_t dinf_size = 8 + dref_size;
-    uint32_t vmhd_size = 20;
-    uint32_t minf_size = 8 + vmhd_size + dinf_size + stbl_size;
-    uint32_t hdlr_size = 8 + 24 + 13;
-    uint32_t mdhd_size = 32;
-    uint32_t mdia_size = 8 + mdhd_size + hdlr_size + minf_size;
-    uint32_t tkhd_size = 92;
-    uint32_t trak_size = 8 + tkhd_size + mdia_size;
-    uint32_t mvhd_size = 108;
-    uint32_t moov_size = 8 + mvhd_size + trak_size;
+    uint32_t stbl_size = 8 + stsd_size + STTS_SIZE + STSC_SIZE + STSZ_SIZE + STCO_SIZE + stss_size;
+    enum { DREF_SIZE = 28 };
+    enum { DINF_SIZE = 36 };
+    enum { VMHD_SIZE = 20 };
+    uint32_t minf_size = 8 + VMHD_SIZE + DINF_SIZE + stbl_size;
+    enum { HDLR_SIZE = 45 };
+    enum { MDHD_SIZE = 32 };
+    uint32_t mdia_size = 8 + MDHD_SIZE + HDLR_SIZE + minf_size;
+    enum { TKHD_SIZE = 92 };
+    uint32_t trak_size = 8 + TKHD_SIZE + mdia_size;
+    enum { MVHD_SIZE = 108 };
+    uint32_t moov_size = 8 + MVHD_SIZE + trak_size;
 
     // Write moov
     write_be32(f, moov_size);
     fwrite("moov", 1, 4, f);
 
     // mvhd
-    write_be32(f, mvhd_size);
-    fwrite("mvhd", 1, 4, f);
-    write_be32(f, 0);  // version/flags
-    write_be32(f, 0);  // creation_time
-    write_be32(f, 0);  // modification_time
+    static const uint8_t mvhd_prefix[] = {
+        BE32(MVHD_SIZE),         // size
+        'm', 'v', 'h', 'd',      // box type
+        BE32(0),                 // version, flags
+        BE32(0),                 // creation_time
+        BE32(0),                 // modification_time
+    };
+    fwrite(mvhd_prefix, 1, sizeof(mvhd_prefix), f);
     write_be32(f, timescale);
     write_be32(f, duration);
-    write_be32(f, 0x00010000);  // rate = 1.0
-    write_be16(f, 0x0100);      // volume = 1.0
-    write_be16(f, 0);           // reserved
-    write_be32(f, 0);           // reserved
-    write_be32(f, 0);           // reserved
-    // Identity matrix
-    write_be32(f, 0x00010000); write_be32(f, 0); write_be32(f, 0);
-    write_be32(f, 0); write_be32(f, 0x00010000); write_be32(f, 0);
-    write_be32(f, 0); write_be32(f, 0); write_be32(f, 0x40000000);
-    // Pre-defined
-    for (int i = 0; i < 6; i++) write_be32(f, 0);
-    write_be32(f, 2);  // next_track_id
+    static const uint8_t mvhd_suffix[] = {
+        BE32(0x00010000),        // rate (16.16 fixed)
+        BE16(0x0100),            // volume (8.8 fixed)
+        BE16(0),                 // reserved
+        BE32(0),                 // reserved
+        BE32(0),                 // reserved
+        // Identity matrix (36 bytes)
+        BE32(0x00010000),        // a
+        BE32(0),                 // b
+        BE32(0),                 // u
+        BE32(0),                 // c
+        BE32(0x00010000),        // d
+        BE32(0),                 // v
+        BE32(0),                 // x
+        BE32(0),                 // y
+        BE32(0x40000000),        // w
+        // pre_defined (24 bytes)
+        BE32(0), BE32(0), BE32(0),
+        BE32(0), BE32(0), BE32(0),
+        BE32(2),                 // next_track_id
+    };
+    fwrite(mvhd_suffix, 1, sizeof(mvhd_suffix), f);
 
     // trak
     write_be32(f, trak_size);
     fwrite("trak", 1, 4, f);
 
     // tkhd
-    write_be32(f, tkhd_size);
-    fwrite("tkhd", 1, 4, f);
-    write_be32(f, 0x00000003);  // version=0, flags=enabled+in_movie
-    write_be32(f, 0);  // creation_time
-    write_be32(f, 0);  // modification_time
-    write_be32(f, 1);  // track_id
-    write_be32(f, 0);  // reserved
+    static const uint8_t tkhd_prefix[] = {
+        BE32(TKHD_SIZE),         // size
+        't', 'k', 'h', 'd',      // box type
+        BE32(0x03),              // version, flags (enabled + in_movie)
+        BE32(0),                 // creation_time
+        BE32(0),                 // modification_time
+        BE32(1),                 // track_id
+        BE32(0),                 // reserved
+    };
+    fwrite(tkhd_prefix, 1, sizeof(tkhd_prefix), f);
     write_be32(f, duration);
-    write_be32(f, 0);  // reserved
-    write_be32(f, 0);  // reserved
-    write_be16(f, 0);  // layer
-    write_be16(f, 0);  // alternate_group
-    write_be16(f, 0);  // volume
-    write_be16(f, 0);  // reserved
-    // Identity matrix
-    write_be32(f, 0x00010000); write_be32(f, 0); write_be32(f, 0);
-    write_be32(f, 0); write_be32(f, 0x00010000); write_be32(f, 0);
-    write_be32(f, 0); write_be32(f, 0); write_be32(f, 0x40000000);
+    static const uint8_t tkhd_suffix[] = {
+        BE32(0),                 // reserved
+        BE32(0),                 // reserved
+        BE16(0),                 // layer
+        BE16(0),                 // alternate_group
+        BE16(0),                 // volume (video track)
+        BE16(0),                 // reserved
+        // Identity matrix (36 bytes)
+        BE32(0x00010000),        // a
+        BE32(0),                 // b
+        BE32(0),                 // u
+        BE32(0),                 // c
+        BE32(0x00010000),        // d
+        BE32(0),                 // v
+        BE32(0),                 // x
+        BE32(0),                 // y
+        BE32(0x40000000),        // w
+    };
+    fwrite(tkhd_suffix, 1, sizeof(tkhd_suffix), f);
     write_be32(f, enc->_width << 16);   // width 16.16
     write_be32(f, enc->_height << 16);  // height 16.16
 
@@ -398,52 +427,65 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
     fwrite("mdia", 1, 4, f);
 
     // mdhd
-    write_be32(f, mdhd_size);
-    fwrite("mdhd", 1, 4, f);
-    write_be32(f, 0);  // version/flags
-    write_be32(f, 0);  // creation_time
-    write_be32(f, 0);  // modification_time
+    static const uint8_t mdhd_prefix[] = {
+        BE32(MDHD_SIZE),         // size
+        'm', 'd', 'h', 'd',      // box type
+        BE32(0),                 // version, flags
+        BE32(0),                 // creation_time
+        BE32(0),                 // modification_time
+    };
+    fwrite(mdhd_prefix, 1, sizeof(mdhd_prefix), f);
     write_be32(f, timescale);
     write_be32(f, duration);
-    write_be16(f, 0x55C4);  // language = "und"
-    write_be16(f, 0);       // quality
+    static const uint8_t mdhd_suffix[] = {
+        BE16(0x55C4),            // language ("und")
+        BE16(0),                 // pre_defined
+    };
+    fwrite(mdhd_suffix, 1, sizeof(mdhd_suffix), f);
 
     // hdlr
-    write_be32(f, hdlr_size);
-    fwrite("hdlr", 1, 4, f);
-    write_be32(f, 0);  // version/flags
-    write_be32(f, 0);  // pre_defined
-    fwrite("vide", 1, 4, f);
-    write_be32(f, 0);  // reserved
-    write_be32(f, 0);  // reserved
-    write_be32(f, 0);  // reserved
-    fwrite("VideoHandler", 1, 13, f);
+    static const uint8_t hdlr_box[] = {
+        BE32(HDLR_SIZE),         // size
+        'h', 'd', 'l', 'r',      // box type
+        BE32(0),                 // version, flags
+        BE32(0),                 // pre_defined
+        'v', 'i', 'd', 'e',      // handler_type
+        BE32(0),                 // reserved
+        BE32(0),                 // reserved
+        BE32(0),                 // reserved
+        'V', 'i', 'd', 'e', 'o', 'H', 'a', 'n', 'd', 'l', 'e', 'r', 0x00,  // name
+    };
+    fwrite(hdlr_box, 1, sizeof(hdlr_box), f);
 
     // minf
     write_be32(f, minf_size);
     fwrite("minf", 1, 4, f);
 
     // vmhd
-    write_be32(f, vmhd_size);
-    fwrite("vmhd", 1, 4, f);
-    write_be32(f, 1);  // version=0, flags=1
-    write_be16(f, 0);  // graphics_mode
-    write_be16(f, 0);  // opcolor[0]
-    write_be16(f, 0);  // opcolor[1]
-    write_be16(f, 0);  // opcolor[2]
+    static const uint8_t vmhd_box[] = {
+        BE32(VMHD_SIZE),         // size
+        'v', 'm', 'h', 'd',      // box type
+        BE32(1),                 // version, flags
+        BE16(0),                 // graphics_mode
+        BE16(0),                 // opcolor[0]
+        BE16(0),                 // opcolor[1]
+        BE16(0),                 // opcolor[2]
+    };
+    fwrite(vmhd_box, 1, sizeof(vmhd_box), f);
 
-    // dinf
-    write_be32(f, dinf_size);
-    fwrite("dinf", 1, 4, f);
-
-    // dref
-    write_be32(f, dref_size);
-    fwrite("dref", 1, 4, f);
-    write_be32(f, 0);  // version/flags
-    write_be32(f, 1);  // entry_count
-    write_be32(f, 12); // url size
-    fwrite("url ", 1, 4, f);
-    write_be32(f, 1);  // flags = self-contained
+    // dinf + dref
+    static const uint8_t dinf_dref_box[] = {
+        BE32(DINF_SIZE),         // dinf size
+        'd', 'i', 'n', 'f',      // dinf box type
+        BE32(DREF_SIZE),         // dref size
+        'd', 'r', 'e', 'f',      // dref box type
+        BE32(0),                 // version, flags
+        BE32(1),                 // entry_count
+        BE32(12),                // url size
+        'u', 'r', 'l', ' ',      // url box type
+        BE32(1),                 // flags (self-contained)
+    };
+    fwrite(dinf_dref_box, 1, sizeof(dinf_dref_box), f);
 
     // stbl
     write_be32(f, stbl_size);
@@ -451,40 +493,57 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
 
     // stsd
     write_be32(f, stsd_size);
-    fwrite("stsd", 1, 4, f);
-    write_be32(f, 0);  // version/flags
-    write_be32(f, 1);  // entry_count
+    static const uint8_t stsd_header[] = {
+        's', 't', 's', 'd',      // box type
+        BE32(0),                 // version, flags
+        BE32(1),                 // entry_count
+    };
+    fwrite(stsd_header, 1, sizeof(stsd_header), f);
 
     // avc1
     write_be32(f, avc1_size);
-    fwrite("avc1", 1, 4, f);
-    write_be32(f, 0);  // reserved
-    write_be16(f, 0);  // reserved
-    write_be16(f, 1);  // data_reference_index
-    write_be16(f, 0);  // pre_defined
-    write_be16(f, 0);  // reserved
-    write_be32(f, 0);  // pre_defined
-    write_be32(f, 0);  // pre_defined
-    write_be32(f, 0);  // pre_defined
+    static const uint8_t avc1_header[] = {
+        'a', 'v', 'c', '1',      // box type
+        BE32(0),                 // reserved
+        BE16(0),                 // reserved
+        BE16(1),                 // data_reference_index
+        BE16(0),                 // pre_defined
+        BE16(0),                 // reserved
+        BE32(0),                 // pre_defined
+        BE32(0),                 // pre_defined
+        BE32(0),                 // pre_defined
+    };
+    fwrite(avc1_header, 1, sizeof(avc1_header), f);
     write_be16(f, enc->_width);
     write_be16(f, enc->_height);
-    write_be32(f, 0x00480000);  // horiz_resolution = 72 dpi
-    write_be32(f, 0x00480000);  // vert_resolution = 72 dpi
-    write_be32(f, 0);           // reserved
-    write_be16(f, 1);           // frame_count
-    for (int i = 0; i < 32; i++) fputc(0, f);  // compressor_name
-    write_be16(f, 0x0018);      // depth = 24
-    write_be16(f, 0xFFFF);      // pre_defined = -1
+    static const uint8_t avc1_suffix[] = {
+        BE32(0x00480000),        // horiz_resolution (16.16 fixed)
+        BE32(0x00480000),        // vert_resolution (16.16 fixed)
+        BE32(0),                 // reserved
+        BE16(1),                 // frame_count
+        // compressor_name (32 bytes, empty pascal string)
+        BE32(0), BE32(0), BE32(0), BE32(0),
+        BE32(0), BE32(0), BE32(0), BE32(0),
+        BE16(24),                // depth
+        BE16(0xFFFF),            // pre_defined
+    };
+    fwrite(avc1_suffix, 1, sizeof(avc1_suffix), f);
 
     // avcC
     write_be32(f, avcC_size);
-    fwrite("avcC", 1, 4, f);
-    fputc(1, f);        // configurationVersion
+    static const uint8_t avcC_header[] = {
+        'a', 'v', 'c', 'C',      // box type
+        0x01,                    // configurationVersion
+    };
+    fwrite(avcC_header, 1, sizeof(avcC_header), f);
     fputc(sps[1], f);   // AVCProfileIndication
     fputc(sps[2], f);   // profile_compatibility
     fputc(sps[3], f);   // AVCLevelIndication
-    fputc(0xFF, f);     // lengthSizeMinusOne = 3 (4-byte lengths)
-    fputc(0xE1, f);     // numOfSequenceParameterSets = 1
+    static const uint8_t avcC_mid[] = {
+        0xFF,  // lengthSizeMinusOne (4-byte lengths)
+        0xE1,  // numOfSequenceParameterSets
+    };
+    fwrite(avcC_mid, 1, sizeof(avcC_mid), f);
     write_be16(f, sps_len);
     fwrite(sps, 1, sps_len, f);
     fputc(1, f);        // numOfPictureParameterSets
@@ -492,40 +551,58 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
     fwrite(pps, 1, pps_len, f);
 
     // stts
-    write_be32(f, stts_size);
-    fwrite("stts", 1, 4, f);
-    write_be32(f, 0);  // version/flags
-    write_be32(f, 1);  // entry_count
+    static const uint8_t stts_prefix[] = {
+        BE32(STTS_SIZE),         // size
+        's', 't', 't', 's',      // box type
+        BE32(0),                 // version, flags
+        BE32(1),                 // entry_count
+    };
+    fwrite(stts_prefix, 1, sizeof(stts_prefix), f);
     write_be32(f, enc->_frame_count);
     write_be32(f, enc->_fps_den);
 
     // stsc
-    write_be32(f, stsc_size);
-    fwrite("stsc", 1, 4, f);
-    write_be32(f, 0);  // version/flags
-    write_be32(f, 1);  // entry_count
-    write_be32(f, 1);  // first_chunk
+    static const uint8_t stsc_prefix[] = {
+        BE32(STSC_SIZE),         // size
+        's', 't', 's', 'c',      // box type
+        BE32(0),                 // version, flags
+        BE32(1),                 // entry_count
+        BE32(1),                 // first_chunk
+    };
+    fwrite(stsc_prefix, 1, sizeof(stsc_prefix), f);
     write_be32(f, enc->_frame_count);  // samples_per_chunk
-    write_be32(f, 1);  // sample_description_index
+    static const uint8_t stsc_suffix[] = {
+        BE32(1),                 // sample_description_index
+    };
+    fwrite(stsc_suffix, 1, sizeof(stsc_suffix), f);
 
     // stsz
-    write_be32(f, stsz_size);
-    fwrite("stsz", 1, 4, f);
-    write_be32(f, 0);  // version/flags
+    static const uint8_t stsz_prefix[] = {
+        BE32(STSZ_SIZE),         // size
+        's', 't', 's', 'z',      // box type
+        BE32(0),                 // version, flags
+    };
+    fwrite(stsz_prefix, 1, sizeof(stsz_prefix), f);
     write_be32(f, sample_size);  // sample_size (constant)
     write_be32(f, enc->_frame_count);
 
     // stco
-    write_be32(f, stco_size);
-    fwrite("stco", 1, 4, f);
-    write_be32(f, 0);  // version/flags
-    write_be32(f, 1);  // entry_count
+    static const uint8_t stco_prefix[] = {
+        BE32(STCO_SIZE),         // size
+        's', 't', 'c', 'o',      // box type
+        BE32(0),                 // version, flags
+        BE32(1),                 // entry_count
+    };
+    fwrite(stco_prefix, 1, sizeof(stco_prefix), f);
     write_be32(f, chunk_offset);
 
     // stss (sync samples - all frames are keyframes)
     write_be32(f, stss_size);
-    fwrite("stss", 1, 4, f);
-    write_be32(f, 0);  // version/flags
+    static const uint8_t stss_header[] = {
+        's', 't', 's', 's',      // box type
+        BE32(0),                 // version, flags
+    };
+    fwrite(stss_header, 1, sizeof(stss_header), f);
     write_be32(f, enc->_frame_count);
     for (uint32_t i = 1; i <= enc->_frame_count; i++) {
         write_be32(f, i);

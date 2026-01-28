@@ -280,34 +280,6 @@ static void write_sps(nanomp4h264_t *enc, uint8_t *buf, int *len) {
     *len = bs_pos(&bs);
 }
 
-// PPS NAL unit (constant for this encoder)
-// Bit layout:
-//   0x68      NAL header (nal_ref_idc=3, nal_unit_type=8)
-//   1         ue(0)  pps_id
-//   1         ue(0)  sps_id
-//   0         u(1)   entropy_coding_mode (CAVLC)
-//   0         u(1)   bottom_field_pic_order
-//   1         ue(0)  num_slice_groups_minus1
-//   1         ue(0)  num_ref_idx_l0_default_active_minus1
-//   1         ue(0)  num_ref_idx_l1_default_active_minus1
-//   0         u(1)   weighted_pred_flag
-//   00        u(2)   weighted_bipred_idc
-//   1         se(0)  pic_init_qp_minus26
-//   1         se(0)  pic_init_qs_minus26
-//   1         se(0)  chroma_qp_index_offset
-//   0         u(1)   deblocking_filter_control
-//   0         u(1)   constrained_intra_pred
-//   0         u(1)   redundant_pic_cnt_present
-//   1         u(1)   RBSP stop bit
-//   0000000         alignment
-static const uint8_t pps[] = {
-    0x68,  // NAL header
-    0xCE,  // 11_00_1110: ue(0), ue(0), 0, 0, ue(0), ue(0), ue(0), 0
-    0x38,  // 00_111_000: 00, se(0), se(0), se(0), 0, 0, 0
-    0x80,  // 1_0000000: stop bit, alignment
-};
-static const int pps_len = sizeof(pps);
-
 void nanomp4h264_flush(nanomp4h264_t *enc) {
     if (enc->_error || enc->_frame_count == 0) return;
 
@@ -318,6 +290,33 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
     uint8_t sps[256];
     int sps_len;
     write_sps(enc, sps, &sps_len);
+
+    // PPS NAL unit (constant for this encoder)
+    // Bit layout:
+    //   0x68      NAL header (nal_ref_idc=3, nal_unit_type=8)
+    //   1         ue(0)  pps_id
+    //   1         ue(0)  sps_id
+    //   0         u(1)   entropy_coding_mode (CAVLC)
+    //   0         u(1)   bottom_field_pic_order
+    //   1         ue(0)  num_slice_groups_minus1
+    //   1         ue(0)  num_ref_idx_l0_default_active_minus1
+    //   1         ue(0)  num_ref_idx_l1_default_active_minus1
+    //   0         u(1)   weighted_pred_flag
+    //   00        u(2)   weighted_bipred_idc
+    //   1         se(0)  pic_init_qp_minus26
+    //   1         se(0)  pic_init_qs_minus26
+    //   1         se(0)  chroma_qp_index_offset
+    //   0         u(1)   deblocking_filter_control
+    //   0         u(1)   constrained_intra_pred
+    //   0         u(1)   redundant_pic_cnt_present
+    //   1         u(1)   RBSP stop bit
+    //   0000000         alignment
+    static const uint8_t pps[] = {
+        0x68,  // NAL header
+        0xCE,  // 11_00_1110: ue(0), ue(0), 0, 0, ue(0), ue(0), ue(0), 0
+        0x38,  // 00_111_000: 00, se(0), se(0), se(0), 0, 0, 0
+        0x80,  // 1_0000000: stop bit, alignment
+    };
 
     uint32_t duration = enc->_frame_count * enc->_fps_den;
     uint32_t timescale = enc->_fps_num;
@@ -330,7 +329,7 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
     enum { STSZ_SIZE = 20 };
     enum { STSC_SIZE = 28 };
     enum { STTS_SIZE = 24 };
-    uint32_t avcC_size = 8 + 8 + sps_len + 3 + pps_len;  // header + config(6) + sps_len_field(2) + sps + numPPS(1) + pps_len_field(2) + pps
+    uint32_t avcC_size = 8 + 8 + sps_len + 3 + sizeof(pps);  // header + config(6) + sps_len_field(2) + sps + numPPS(1) + pps_len_field(2) + pps
     uint32_t avc1_size = 8 + 78 + avcC_size;
     uint32_t stsd_size = 8 + 8 + avc1_size;
     uint32_t stbl_size = 8 + stsd_size + STTS_SIZE + STSC_SIZE + STSZ_SIZE + STCO_SIZE + stss_size;
@@ -566,15 +565,17 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
         0xFF,  // lengthSizeMinusOne (4-byte lengths)
         0xE1,  // numOfSequenceParameterSets
     });
+
     WRITE_DYNAMIC({
         BE16(sps_len),
     });
     fwrite(sps, 1, sps_len, f);
-    WRITE_DYNAMIC({
+
+    WRITE_CONST({
         1,        // numOfPictureParameterSets
-        BE16(pps_len),
+        BE16(sizeof(pps)),
     });
-    fwrite(pps, 1, pps_len, f);
+    fwrite(pps, 1, sizeof(pps), f);
 
     WRITE_CONST({
         // stts

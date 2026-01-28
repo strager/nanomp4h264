@@ -276,36 +276,33 @@ static void write_sps(nanomp4h264_t *enc, uint8_t *buf, int *len) {
     *len = bs_pos(&bs);
 }
 
-static void write_pps(uint8_t *buf, int *len) {
-    bitstream_t bs;
-    bs_init(&bs, buf, 256);
-
-    // NAL header
-    bs_write_bits(&bs, 0x68, 8);
-
-    // PPS
-    bs_write_ue(&bs, 0);  // pps_id
-    bs_write_ue(&bs, 0);  // sps_id
-    bs_write_bits(&bs, 0, 1);  // entropy_coding_mode (CAVLC)
-    bs_write_bits(&bs, 0, 1);  // bottom_field_pic_order
-    bs_write_ue(&bs, 0);  // num_slice_groups_minus1
-    bs_write_ue(&bs, 0);  // num_ref_idx_l0_default_active_minus1
-    bs_write_ue(&bs, 0);  // num_ref_idx_l1_default_active_minus1
-    bs_write_bits(&bs, 0, 1);  // weighted_pred_flag
-    bs_write_bits(&bs, 0, 2);  // weighted_bipred_idc
-    bs_write_se(&bs, 0);  // pic_init_qp_minus26
-    bs_write_se(&bs, 0);  // pic_init_qs_minus26
-    bs_write_se(&bs, 0);  // chroma_qp_index_offset
-    bs_write_bits(&bs, 0, 1);  // deblocking_filter_control
-    bs_write_bits(&bs, 0, 1);  // constrained_intra_pred
-    bs_write_bits(&bs, 0, 1);  // redundant_pic_cnt_present
-
-    // RBSP trailing
-    bs_write_bits(&bs, 1, 1);
-    bs_byte_align(&bs);
-
-    *len = bs_pos(&bs);
-}
+// PPS NAL unit (constant for this encoder)
+// Bit layout:
+//   0x68      NAL header (nal_ref_idc=3, nal_unit_type=8)
+//   1         ue(0)  pps_id
+//   1         ue(0)  sps_id
+//   0         u(1)   entropy_coding_mode (CAVLC)
+//   0         u(1)   bottom_field_pic_order
+//   1         ue(0)  num_slice_groups_minus1
+//   1         ue(0)  num_ref_idx_l0_default_active_minus1
+//   1         ue(0)  num_ref_idx_l1_default_active_minus1
+//   0         u(1)   weighted_pred_flag
+//   00        u(2)   weighted_bipred_idc
+//   1         se(0)  pic_init_qp_minus26
+//   1         se(0)  pic_init_qs_minus26
+//   1         se(0)  chroma_qp_index_offset
+//   0         u(1)   deblocking_filter_control
+//   0         u(1)   constrained_intra_pred
+//   0         u(1)   redundant_pic_cnt_present
+//   1         u(1)   RBSP stop bit
+//   0000000         alignment
+static const uint8_t pps[] = {
+    0x68,  // NAL header
+    0xCE,  // 11_00_1110: ue(0), ue(0), 0, 0, ue(0), ue(0), ue(0), 0
+    0x38,  // 00_111_000: 00, se(0), se(0), se(0), 0, 0, 0
+    0x80,  // 1_0000000: stop bit, alignment
+};
+static const int pps_len = sizeof(pps);
 
 void nanomp4h264_flush(nanomp4h264_t *enc) {
     if (enc->_error || enc->_frame_count == 0) return;
@@ -313,11 +310,10 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
     FILE *f = enc->_file;
     long end_pos = ftell(f);
 
-    // Build SPS and PPS
-    uint8_t sps[256], pps[256];
-    int sps_len, pps_len;
+    // Build SPS
+    uint8_t sps[256];
+    int sps_len;
     write_sps(enc, sps, &sps_len);
-    write_pps(pps, &pps_len);
 
     uint32_t duration = enc->_frame_count * enc->_fps_den;
     uint32_t timescale = enc->_fps_num;

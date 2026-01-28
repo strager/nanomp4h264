@@ -76,36 +76,45 @@ static void write_be16(FILE *f, uint16_t v) {
     fwrite(b, 1, 2, f);
 }
 
-// RGB to YUV420 with padding
-static void rgb_to_yuv420(const uint8_t *rgb, int w, int h,
-                          uint8_t *yuv, int pw, int ph) {
-    uint8_t *y_plane = yuv;
-    uint8_t *u_plane = yuv + pw * ph;
-    uint8_t *v_plane = u_plane + (pw * ph / 4);
+// RGB to YUV420 for a single 16x16 macroblock
+static void rgb_to_yuv420_mb(const uint8_t *rgb, int rgb_w, int rgb_h,
+                             int mb_x, int mb_y,
+                             uint8_t *y_out,   // 256 bytes (16x16)
+                             uint8_t *cb_out,  // 64 bytes (8x8)
+                             uint8_t *cr_out)  // 64 bytes (8x8)
+{
+    int base_x = mb_x * 16;
+    int base_y = mb_y * 16;
 
-    // Convert and pad Y plane
-    for (int row = 0; row < ph; row++) {
-        for (int col = 0; col < pw; col++) {
-            int sr = row < h ? row : h - 1;
-            int sc = col < w ? col : w - 1;
-            const uint8_t *p = rgb + (sr * w + sc) * 3;
+    // Convert Y plane (16x16)
+    for (int row = 0; row < 16; row++) {
+        for (int col = 0; col < 16; col++) {
+            int src_y = base_y + row;
+            int src_x = base_x + col;
+            // Clamp to image bounds for edge padding
+            if (src_y >= rgb_h) src_y = rgb_h - 1;
+            if (src_x >= rgb_w) src_x = rgb_w - 1;
+            const uint8_t *p = rgb + (src_y * rgb_w + src_x) * 3;
             int r = p[0], g = p[1], b = p[2];
             int y = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
-            y_plane[row * pw + col] = y < 0 ? 0 : (y > 255 ? 255 : y);
+            y_out[row * 16 + col] = y < 0 ? 0 : (y > 255 ? 255 : y);
         }
     }
 
-    // Convert and pad U/V planes (2x2 subsampling)
-    for (int row = 0; row < ph / 2; row++) {
-        for (int col = 0; col < pw / 2; col++) {
-            int sr = row * 2 < h ? row * 2 : h - 1;
-            int sc = col * 2 < w ? col * 2 : w - 1;
-            const uint8_t *p = rgb + (sr * w + sc) * 3;
+    // Convert Cb/Cr planes (8x8, 2x2 subsampling)
+    for (int row = 0; row < 8; row++) {
+        for (int col = 0; col < 8; col++) {
+            int src_y = base_y + row * 2;
+            int src_x = base_x + col * 2;
+            // Clamp to image bounds for edge padding
+            if (src_y >= rgb_h) src_y = rgb_h - 1;
+            if (src_x >= rgb_w) src_x = rgb_w - 1;
+            const uint8_t *p = rgb + (src_y * rgb_w + src_x) * 3;
             int r = p[0], g = p[1], b = p[2];
             int u = ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128;
             int v = ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128;
-            u_plane[row * (pw / 2) + col] = u < 0 ? 0 : (u > 255 ? 255 : u);
-            v_plane[row * (pw / 2) + col] = v < 0 ? 0 : (v > 255 ? 255 : v);
+            cb_out[row * 8 + col] = u < 0 ? 0 : (u > 255 ? 255 : u);
+            cr_out[row * 8 + col] = v < 0 ? 0 : (v > 255 ? 255 : v);
         }
     }
 }
@@ -133,12 +142,6 @@ void nanomp4h264_open(nanomp4h264_t *enc, const nanomp4h264_config_t *config,
         return;
     }
 
-    enc->_yuv_buffer = malloc(enc->_padded_width * enc->_padded_height * 3 / 2);
-    if (!enc->_yuv_buffer) {
-        enc->_error = 1;
-        return;
-    }
-
     FILE *f = enc->_file;
 
     // Write ftyp box (28 bytes)
@@ -161,9 +164,6 @@ void nanomp4h264_write_frame(nanomp4h264_t *enc, const uint8_t *data,
     (void)format;  // Only RGB888 supported currently
 
     FILE *f = enc->_file;
-
-    rgb_to_yuv420(data, enc->_width, enc->_height,
-                  enc->_yuv_buffer, enc->_padded_width, enc->_padded_height);
 
     // Record NAL length position
     long nal_len_pos = ftell(f);
@@ -193,6 +193,7 @@ void nanomp4h264_write_frame(nanomp4h264_t *enc, const uint8_t *data,
 
     // Continue bitstream for macroblocks
     uint8_t mb_buf[512];
+    uint8_t mb_yuv[384];  // 256 Y + 64 Cb + 64 Cr
     int mb_count = enc->_mb_width * enc->_mb_height;
 
     for (int mb = 0; mb < mb_count; mb++) {
@@ -212,25 +213,20 @@ void nanomp4h264_write_frame(nanomp4h264_t *enc, const uint8_t *data,
         int hdr_len = bs_pos(&bs);
         fwrite(mb_buf, 1, hdr_len, f);
 
-        // Write raw samples: 256 Y, 64 Cb, 64 Cr
+        // Convert this macroblock from RGB to YUV420 on-the-fly
         int mb_x = mb % enc->_mb_width;
         int mb_y = mb / enc->_mb_width;
-        int pw = enc->_padded_width;
+        uint8_t *y_out = mb_yuv;
+        uint8_t *cb_out = mb_yuv + 256;
+        uint8_t *cr_out = mb_yuv + 256 + 64;
 
-        // Y samples (16x16)
-        for (int y = 0; y < 16; y++) {
-            fwrite(&enc->_yuv_buffer[(mb_y * 16 + y) * pw + mb_x * 16], 1, 16, f);
-        }
-        // Cb samples (8x8)
-        uint8_t *u_plane = enc->_yuv_buffer + pw * enc->_padded_height;
-        for (int y = 0; y < 8; y++) {
-            fwrite(&u_plane[(mb_y * 8 + y) * (pw / 2) + mb_x * 8], 1, 8, f);
-        }
-        // Cr samples (8x8)
-        uint8_t *v_plane = u_plane + (pw * enc->_padded_height / 4);
-        for (int y = 0; y < 8; y++) {
-            fwrite(&v_plane[(mb_y * 8 + y) * (pw / 2) + mb_x * 8], 1, 8, f);
-        }
+        rgb_to_yuv420_mb(data, enc->_width, enc->_height, mb_x, mb_y,
+                         y_out, cb_out, cr_out);
+
+        // Write raw samples: 256 Y, 64 Cb, 64 Cr
+        fwrite(y_out, 1, 256, f);
+        fwrite(cb_out, 1, 64, f);
+        fwrite(cr_out, 1, 64, f);
     }
 
     // RBSP trailing bits (stop bit + alignment)
@@ -565,9 +561,7 @@ void nanomp4h264_close(nanomp4h264_t *enc) {
         nanomp4h264_flush(enc);
     }
     if (enc->_file) fclose(enc->_file);
-    free(enc->_yuv_buffer);
     enc->_file = NULL;
-    enc->_yuv_buffer = NULL;
 }
 
 int nanomp4h264_get_error(const nanomp4h264_t *enc) {

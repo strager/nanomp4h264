@@ -52,11 +52,6 @@ static void bs_write_ue(bitstream_t *bs, uint32_t val) {
     bs_write_bits(bs, val, val_bits + padding_bits);
 }
 
-static void bs_write_se(bitstream_t *bs, int32_t val) {
-    uint32_t uval = val <= 0 ? (uint32_t)(-val * 2) : (uint32_t)(val * 2 - 1);
-    bs_write_ue(bs, uval);
-}
-
 static void bs_byte_align(bitstream_t *bs) {
     if (bs->bits_to_write > 0) {
         *bs->buf++ = (uint8_t)(bs->to_write >> 56);
@@ -71,15 +66,10 @@ static int bs_pos(bitstream_t *bs) {
     return (int)(bs->buf - bs->start);
 }
 
-// Big-endian writers
+// Big-endian writer
 static void write_be32(FILE *f, uint32_t v) {
     uint8_t b[4] = {v >> 24, v >> 16, v >> 8, v};
     fwrite(b, 1, 4, f);
-}
-
-static void write_be16(FILE *f, uint16_t v) {
-    uint8_t b[2] = {v >> 8, v};
-    fwrite(b, 1, 2, f);
 }
 
 // RGB to YUV420 for a single 16x16 macroblock

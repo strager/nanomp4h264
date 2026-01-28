@@ -320,7 +320,6 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
     uint32_t chunk_offset = (uint32_t)(enc->_mdat_start_pos + 8);
 
     // Calculate box sizes (bottom-up)
-    uint32_t stss_size = 16 + enc->_frame_count * 4;
     enum { STCO_SIZE = 20 };
     enum { STSZ_SIZE = 20 };
     enum { STSC_SIZE = 28 };
@@ -328,7 +327,7 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
     uint32_t avcC_size = 8 + 8 + sps_len + 3 + sizeof(pps);  // header + config(6) + sps_len_field(2) + sps + numPPS(1) + pps_len_field(2) + pps
     uint32_t avc1_size = 8 + 78 + avcC_size;
     uint32_t stsd_size = 8 + 8 + avc1_size;
-    uint32_t stbl_size = 8 + stsd_size + STTS_SIZE + STSC_SIZE + STSZ_SIZE + STCO_SIZE + stss_size;
+    uint32_t stbl_size = 8 + stsd_size + STTS_SIZE + STSC_SIZE + STSZ_SIZE + STCO_SIZE;
     enum { DREF_SIZE = 28 };
     enum { DINF_SIZE = 36 };
     enum { VMHD_SIZE = 20 };
@@ -605,20 +604,7 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
     });
     WRITE_DYNAMIC({
         BE32(chunk_offset),
-
-        // stss (sync samples - all frames are keyframes)
-        BE32(stss_size),
     });
-    WRITE_CONST({
-        's', 't', 's', 's',      // box type
-        BE32(0),                 // version, flags
-    });
-    WRITE_DYNAMIC({
-        BE32(enc->_frame_count),
-    });
-    for (uint32_t i = 1; i <= enc->_frame_count; i++) {
-        WRITE_DYNAMIC({ BE32(i) });
-    }
 
     // Fix mdat size
     long final_pos = ftell(f);

@@ -209,6 +209,9 @@ int main(void) {
         }
 
         nanomp4h264_write_frame(&enc, rgb, NANOMP4H264_FORMAT_RGB888);
+        if ((frame+1) % 20 == 0) {
+            nanomp4h264_flush(&enc);
+        }
 
         if (nanomp4h264_get_error(&enc) != 0) {
             fprintf(stderr, "Error after frame %d: %d\n", frame, nanomp4h264_get_error(&enc));

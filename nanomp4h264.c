@@ -536,7 +536,7 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
     uint32_t mdat_size = (uint32_t)(end_pos - enc->_mdat_start_pos);
     fseek(f, enc->_mdat_start_pos, SEEK_SET);
     write_be32(f, mdat_size);
-    fseek(f, final_pos, SEEK_SET);
+    fseek(f, end_pos, SEEK_SET);
     fflush(f);
 }
 

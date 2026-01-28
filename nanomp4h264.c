@@ -3,6 +3,7 @@
 
 #include "nanomp4h264.h"
 
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -164,13 +165,15 @@ void nanomp4h264_write_frame(nanomp4h264_t *enc, const uint8_t *data,
     (void)format;  // Only RGB888 supported currently
 
     FILE *f = enc->_file;
+    int mb_count = enc->_mb_width * enc->_mb_height;
+    uint32_t nal_len = 386 * mb_count + 3;
+    uint32_t bytes_written = 0;
 
-    // Record NAL length position
-    long nal_len_pos = ftell(f);
-    write_be32(f, 0);  // placeholder
+    write_be32(f, nal_len);
 
     // NAL header: IDR slice (type 5)
     fputc(0x65, f);
+    bytes_written += 1;
 
     // Slice header
     uint8_t slice_hdr[32];
@@ -189,7 +192,6 @@ void nanomp4h264_write_frame(nanomp4h264_t *enc, const uint8_t *data,
     // Continue bitstream for macroblocks
     uint8_t mb_buf[512];
     uint8_t mb_yuv[384];  // 256 Y + 64 Cb + 64 Cr
-    int mb_count = enc->_mb_width * enc->_mb_height;
 
     for (int mb = 0; mb < mb_count; mb++) {
         // For first MB, continue from slice header bitstream; otherwise fresh buffer
@@ -202,6 +204,7 @@ void nanomp4h264_write_frame(nanomp4h264_t *enc, const uint8_t *data,
 
         int hdr_len = bs_pos(&bs);
         fwrite(bs.buf, 1, hdr_len, f);
+        bytes_written += hdr_len;
 
         // Convert this macroblock from RGB to YUV420 on-the-fly
         int mb_x = mb % enc->_mb_width;
@@ -217,18 +220,15 @@ void nanomp4h264_write_frame(nanomp4h264_t *enc, const uint8_t *data,
         fwrite(y_out, 1, 256, f);
         fwrite(cb_out, 1, 64, f);
         fwrite(cr_out, 1, 64, f);
+        bytes_written += 384;
     }
 
     // RBSP trailing bits (stop bit + alignment)
     uint8_t trailing = 0x80;
     fwrite(&trailing, 1, 1, f);
+    bytes_written += 1;
 
-    // Fix NAL length
-    long end_pos = ftell(f);
-    uint32_t nal_len = (uint32_t)(end_pos - nal_len_pos - 4);
-    fseek(f, nal_len_pos, SEEK_SET);
-    write_be32(f, nal_len);
-    fseek(f, end_pos, SEEK_SET);
+    assert(bytes_written == nal_len);
 
     if (enc->_frame_count == 0) {
         enc->_frame_nal_size = nal_len;

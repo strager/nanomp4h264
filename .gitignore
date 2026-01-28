@@ -1,0 +1,5 @@
+# Created by Makefile:
+/examples/octagrams
+/examples/octagrams.dSYM/
+/examples/octagrams_opencl
+/examples/octagrams_opencl.dSYM/

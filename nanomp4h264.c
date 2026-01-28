@@ -228,47 +228,6 @@ void nanomp4h264_write_frame(nanomp4h264_t *enc, const uint8_t *data,
     enc->_frame_count++;
 }
 
-static void write_sps(nanomp4h264_t *enc, uint8_t *buf, int *len) {
-    bitstream_t bs;
-    bs_init(&bs, buf, 256);
-
-    // NAL header
-    bs_write_bits(&bs, 0x67, 8);
-
-    // SPS
-    bs_write_bits(&bs, 66, 8);   // profile_idc = Baseline
-    bs_write_bits(&bs, 0x80, 8); // constraint_set0_flag=1 (Baseline compatible)
-    bs_write_bits(&bs, 40, 8);   // level_idc = 4.0
-
-    bs_write_ue(&bs, 0);  // sps_id
-    bs_write_ue(&bs, 0);  // log2_max_frame_num_minus4
-    bs_write_ue(&bs, 2);  // pic_order_cnt_type
-    bs_write_ue(&bs, 0);  // max_num_ref_frames
-    bs_write_bits(&bs, 0, 1);  // gaps_in_frame_num_allowed
-    bs_write_ue(&bs, enc->_mb_width - 1);   // pic_width_in_mbs_minus1
-    bs_write_ue(&bs, enc->_mb_height - 1);  // pic_height_in_map_units_minus1
-    bs_write_bits(&bs, 1, 1);  // frame_mbs_only_flag
-    bs_write_bits(&bs, 1, 1);  // direct_8x8_inference_flag
-
-    // Frame cropping
-    int need_crop = enc->_crop_right > 0 || enc->_crop_bottom > 0;
-    bs_write_bits(&bs, need_crop ? 1 : 0, 1);
-    if (need_crop) {
-        bs_write_ue(&bs, 0);                    // left
-        bs_write_ue(&bs, enc->_crop_right / 2);  // right (chroma units)
-        bs_write_ue(&bs, 0);                    // top
-        bs_write_ue(&bs, enc->_crop_bottom / 2); // bottom
-    }
-
-    bs_write_bits(&bs, 0, 1);  // vui_parameters_present
-
-    // RBSP trailing
-    bs_write_bits(&bs, 1, 1);
-    bs_byte_align(&bs);
-
-    *len = bs_pos(&bs);
-}
-
 void nanomp4h264_flush(nanomp4h264_t *enc) {
     if (enc->_error || enc->_frame_count == 0) return;
 
@@ -278,7 +237,46 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
     // Build SPS
     uint8_t sps[256];
     int sps_len;
-    write_sps(enc, sps, &sps_len);
+    {
+        bitstream_t bs;
+        bs_init(&bs, sps, sizeof(sps));
+
+        // NAL header
+        bs_write_bits(&bs, 0x67, 8);
+
+        // SPS
+        bs_write_bits(&bs, 66, 8);   // profile_idc = Baseline
+        bs_write_bits(&bs, 0x80, 8); // constraint_set0_flag=1 (Baseline compatible)
+        bs_write_bits(&bs, 40, 8);   // level_idc = 4.0
+
+        bs_write_ue(&bs, 0);  // sps_id
+        bs_write_ue(&bs, 0);  // log2_max_frame_num_minus4
+        bs_write_ue(&bs, 2);  // pic_order_cnt_type
+        bs_write_ue(&bs, 0);  // max_num_ref_frames
+        bs_write_bits(&bs, 0, 1);  // gaps_in_frame_num_allowed
+        bs_write_ue(&bs, enc->_mb_width - 1);   // pic_width_in_mbs_minus1
+        bs_write_ue(&bs, enc->_mb_height - 1);  // pic_height_in_map_units_minus1
+        bs_write_bits(&bs, 1, 1);  // frame_mbs_only_flag
+        bs_write_bits(&bs, 1, 1);  // direct_8x8_inference_flag
+
+        // Frame cropping
+        int need_crop = enc->_crop_right > 0 || enc->_crop_bottom > 0;
+        bs_write_bits(&bs, need_crop ? 1 : 0, 1);
+        if (need_crop) {
+            bs_write_ue(&bs, 0);                    // left
+            bs_write_ue(&bs, enc->_crop_right / 2);  // right (chroma units)
+            bs_write_ue(&bs, 0);                    // top
+            bs_write_ue(&bs, enc->_crop_bottom / 2); // bottom
+        }
+
+        bs_write_bits(&bs, 0, 1);  // vui_parameters_present
+
+        // RBSP trailing
+        bs_write_bits(&bs, 1, 1);
+        bs_byte_align(&bs);
+
+        sps_len = bs_pos(&bs);
+    }
 
     // PPS NAL unit (constant for this encoder)
     // Bit layout:

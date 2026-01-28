@@ -347,8 +347,11 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
     uint32_t moov_size = 8 + MVHD_SIZE + trak_size;
 
     // Write moov
-    write_be32(f, moov_size);
-    fwrite("moov", 1, 4, f);
+    uint8_t moov_header[] = {
+        BE32(moov_size),
+        'm', 'o', 'o', 'v',
+    };
+    fwrite(moov_header, 1, sizeof(moov_header), f);
 
     // mvhd
     static const uint8_t mvhd_prefix[] = {
@@ -359,8 +362,11 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
         BE32(0),                 // modification_time
     };
     fwrite(mvhd_prefix, 1, sizeof(mvhd_prefix), f);
-    write_be32(f, timescale);
-    write_be32(f, duration);
+    uint8_t mvhd_times[] = {
+        BE32(timescale),
+        BE32(duration),
+    };
+    fwrite(mvhd_times, 1, sizeof(mvhd_times), f);
     static const uint8_t mvhd_suffix[] = {
         BE32(0x00010000),        // rate (16.16 fixed)
         BE16(0x0100),            // volume (8.8 fixed)
@@ -385,8 +391,11 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
     fwrite(mvhd_suffix, 1, sizeof(mvhd_suffix), f);
 
     // trak
-    write_be32(f, trak_size);
-    fwrite("trak", 1, 4, f);
+    uint8_t trak_header[] = {
+        BE32(trak_size),
+        't', 'r', 'a', 'k',
+    };
+    fwrite(trak_header, 1, sizeof(trak_header), f);
 
     // tkhd
     static const uint8_t tkhd_prefix[] = {
@@ -399,7 +408,10 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
         BE32(0),                 // reserved
     };
     fwrite(tkhd_prefix, 1, sizeof(tkhd_prefix), f);
-    write_be32(f, duration);
+    uint8_t tkhd_duration[] = {
+        BE32(duration),
+    };
+    fwrite(tkhd_duration, 1, sizeof(tkhd_duration), f);
     static const uint8_t tkhd_suffix[] = {
         BE32(0),                 // reserved
         BE32(0),                 // reserved
@@ -419,12 +431,18 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
         BE32(0x40000000),        // w
     };
     fwrite(tkhd_suffix, 1, sizeof(tkhd_suffix), f);
-    write_be32(f, enc->_width << 16);   // width 16.16
-    write_be32(f, enc->_height << 16);  // height 16.16
+    uint8_t tkhd_dimensions[] = {
+        BE32(enc->_width << 16),   // width 16.16
+        BE32(enc->_height << 16),  // height 16.16
+    };
+    fwrite(tkhd_dimensions, 1, sizeof(tkhd_dimensions), f);
 
     // mdia
-    write_be32(f, mdia_size);
-    fwrite("mdia", 1, 4, f);
+    uint8_t mdia_header[] = {
+        BE32(mdia_size),
+        'm', 'd', 'i', 'a',
+    };
+    fwrite(mdia_header, 1, sizeof(mdia_header), f);
 
     // mdhd
     static const uint8_t mdhd_prefix[] = {
@@ -435,8 +453,11 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
         BE32(0),                 // modification_time
     };
     fwrite(mdhd_prefix, 1, sizeof(mdhd_prefix), f);
-    write_be32(f, timescale);
-    write_be32(f, duration);
+    uint8_t mdhd_times[] = {
+        BE32(timescale),
+        BE32(duration),
+    };
+    fwrite(mdhd_times, 1, sizeof(mdhd_times), f);
     static const uint8_t mdhd_suffix[] = {
         BE16(0x55C4),            // language ("und")
         BE16(0),                 // pre_defined
@@ -458,8 +479,11 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
     fwrite(hdlr_box, 1, sizeof(hdlr_box), f);
 
     // minf
-    write_be32(f, minf_size);
-    fwrite("minf", 1, 4, f);
+    uint8_t minf_header[] = {
+        BE32(minf_size),
+        'm', 'i', 'n', 'f',
+    };
+    fwrite(minf_header, 1, sizeof(minf_header), f);
 
     // vmhd
     static const uint8_t vmhd_box[] = {
@@ -488,11 +512,17 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
     fwrite(dinf_dref_box, 1, sizeof(dinf_dref_box), f);
 
     // stbl
-    write_be32(f, stbl_size);
-    fwrite("stbl", 1, 4, f);
+    uint8_t stbl_header[] = {
+        BE32(stbl_size),
+        's', 't', 'b', 'l',
+    };
+    fwrite(stbl_header, 1, sizeof(stbl_header), f);
 
     // stsd
-    write_be32(f, stsd_size);
+    uint8_t stsd_size_arr[] = {
+        BE32(stsd_size),
+    };
+    fwrite(stsd_size_arr, 1, sizeof(stsd_size_arr), f);
     static const uint8_t stsd_header[] = {
         's', 't', 's', 'd',      // box type
         BE32(0),                 // version, flags
@@ -501,7 +531,10 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
     fwrite(stsd_header, 1, sizeof(stsd_header), f);
 
     // avc1
-    write_be32(f, avc1_size);
+    uint8_t avc1_size_arr[] = {
+        BE32(avc1_size),
+    };
+    fwrite(avc1_size_arr, 1, sizeof(avc1_size_arr), f);
     static const uint8_t avc1_header[] = {
         'a', 'v', 'c', '1',      // box type
         BE32(0),                 // reserved
@@ -514,8 +547,11 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
         BE32(0),                 // pre_defined
     };
     fwrite(avc1_header, 1, sizeof(avc1_header), f);
-    write_be16(f, enc->_width);
-    write_be16(f, enc->_height);
+    uint8_t avc1_dimensions[] = {
+        BE16(enc->_width),
+        BE16(enc->_height),
+    };
+    fwrite(avc1_dimensions, 1, sizeof(avc1_dimensions), f);
     static const uint8_t avc1_suffix[] = {
         BE32(0x00480000),        // horiz_resolution (16.16 fixed)
         BE32(0x00480000),        // vert_resolution (16.16 fixed)
@@ -530,24 +566,36 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
     fwrite(avc1_suffix, 1, sizeof(avc1_suffix), f);
 
     // avcC
-    write_be32(f, avcC_size);
+    uint8_t avcC_size_arr[] = {
+        BE32(avcC_size),
+    };
+    fwrite(avcC_size_arr, 1, sizeof(avcC_size_arr), f);
     static const uint8_t avcC_header[] = {
         'a', 'v', 'c', 'C',      // box type
         0x01,                    // configurationVersion
     };
     fwrite(avcC_header, 1, sizeof(avcC_header), f);
-    fputc(sps[1], f);   // AVCProfileIndication
-    fputc(sps[2], f);   // profile_compatibility
-    fputc(sps[3], f);   // AVCLevelIndication
+    uint8_t avcC_profile[] = {
+        sps[1],   // AVCProfileIndication
+        sps[2],   // profile_compatibility
+        sps[3],   // AVCLevelIndication
+    };
+    fwrite(avcC_profile, 1, sizeof(avcC_profile), f);
     static const uint8_t avcC_mid[] = {
         0xFF,  // lengthSizeMinusOne (4-byte lengths)
         0xE1,  // numOfSequenceParameterSets
     };
     fwrite(avcC_mid, 1, sizeof(avcC_mid), f);
-    write_be16(f, sps_len);
+    uint8_t sps_len_arr[] = {
+        BE16(sps_len),
+    };
+    fwrite(sps_len_arr, 1, sizeof(sps_len_arr), f);
     fwrite(sps, 1, sps_len, f);
-    fputc(1, f);        // numOfPictureParameterSets
-    write_be16(f, pps_len);
+    uint8_t pps_header[] = {
+        1,        // numOfPictureParameterSets
+        BE16(pps_len),
+    };
+    fwrite(pps_header, 1, sizeof(pps_header), f);
     fwrite(pps, 1, pps_len, f);
 
     // stts
@@ -558,8 +606,11 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
         BE32(1),                 // entry_count
     };
     fwrite(stts_prefix, 1, sizeof(stts_prefix), f);
-    write_be32(f, enc->_frame_count);
-    write_be32(f, enc->_fps_den);
+    uint8_t stts_entry[] = {
+        BE32(enc->_frame_count),
+        BE32(enc->_fps_den),
+    };
+    fwrite(stts_entry, 1, sizeof(stts_entry), f);
 
     // stsc
     static const uint8_t stsc_prefix[] = {
@@ -570,7 +621,10 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
         BE32(1),                 // first_chunk
     };
     fwrite(stsc_prefix, 1, sizeof(stsc_prefix), f);
-    write_be32(f, enc->_frame_count);  // samples_per_chunk
+    uint8_t stsc_samples[] = {
+        BE32(enc->_frame_count),  // samples_per_chunk
+    };
+    fwrite(stsc_samples, 1, sizeof(stsc_samples), f);
     static const uint8_t stsc_suffix[] = {
         BE32(1),                 // sample_description_index
     };
@@ -583,8 +637,11 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
         BE32(0),                 // version, flags
     };
     fwrite(stsz_prefix, 1, sizeof(stsz_prefix), f);
-    write_be32(f, sample_size);  // sample_size (constant)
-    write_be32(f, enc->_frame_count);
+    uint8_t stsz_data[] = {
+        BE32(sample_size),  // sample_size (constant)
+        BE32(enc->_frame_count),
+    };
+    fwrite(stsz_data, 1, sizeof(stsz_data), f);
 
     // stco
     static const uint8_t stco_prefix[] = {
@@ -594,25 +651,40 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
         BE32(1),                 // entry_count
     };
     fwrite(stco_prefix, 1, sizeof(stco_prefix), f);
-    write_be32(f, chunk_offset);
+    uint8_t stco_offset[] = {
+        BE32(chunk_offset),
+    };
+    fwrite(stco_offset, 1, sizeof(stco_offset), f);
 
     // stss (sync samples - all frames are keyframes)
-    write_be32(f, stss_size);
+    uint8_t stss_size_arr[] = {
+        BE32(stss_size),
+    };
+    fwrite(stss_size_arr, 1, sizeof(stss_size_arr), f);
     static const uint8_t stss_header[] = {
         's', 't', 's', 's',      // box type
         BE32(0),                 // version, flags
     };
     fwrite(stss_header, 1, sizeof(stss_header), f);
-    write_be32(f, enc->_frame_count);
+    uint8_t stss_count[] = {
+        BE32(enc->_frame_count),
+    };
+    fwrite(stss_count, 1, sizeof(stss_count), f);
     for (uint32_t i = 1; i <= enc->_frame_count; i++) {
-        write_be32(f, i);
+        uint8_t data[] = {
+            BE32(i),
+        };
+        fwrite(data, 1, sizeof(data), f);
     }
 
     // Fix mdat size
     long final_pos = ftell(f);
     uint32_t mdat_size = (uint32_t)(end_pos - enc->_mdat_start_pos);
     fseek(f, enc->_mdat_start_pos, SEEK_SET);
-    write_be32(f, mdat_size);
+    uint8_t mdat_size_arr[] = {
+        BE32(mdat_size),
+    };
+    fwrite(mdat_size_arr, 1, sizeof(mdat_size_arr), f);
     fseek(f, end_pos, SEEK_SET);
     fflush(f);
 }

@@ -346,28 +346,38 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
     enum { MVHD_SIZE = 108 };
     uint32_t moov_size = 8 + MVHD_SIZE + trak_size;
 
+#define CONCAT(x, y) CONCAT_IMPL(x, y)
+#define CONCAT_IMPL(x, y) x##y
+
+#define WRITE_CONST(...) WRITE_CONST_IMPL(CONCAT(data_, __COUNTER__), __VA_ARGS__)
+#define WRITE_CONST_IMPL(var_name, ...) \
+    static const uint8_t var_name[] = __VA_ARGS__; \
+    fwrite(var_name, 1, sizeof(var_name), f)
+
+#define WRITE_DYNAMIC(...) WRITE_DYNAMIC_IMPL(CONCAT(data_, __COUNTER__), __VA_ARGS__)
+#define WRITE_DYNAMIC_IMPL(var_name, ...) \
+    uint8_t var_name[] = __VA_ARGS__; \
+    fwrite(var_name, 1, sizeof(var_name), f)
+
     // Write moov
-    uint8_t moov_header[] = {
+    WRITE_DYNAMIC({
         BE32(moov_size),
         'm', 'o', 'o', 'v',
-    };
-    fwrite(moov_header, 1, sizeof(moov_header), f);
+    });
 
     // mvhd
-    static const uint8_t mvhd_prefix[] = {
+    WRITE_CONST({
         BE32(MVHD_SIZE),         // size
         'm', 'v', 'h', 'd',      // box type
         BE32(0),                 // version, flags
         BE32(0),                 // creation_time
         BE32(0),                 // modification_time
-    };
-    fwrite(mvhd_prefix, 1, sizeof(mvhd_prefix), f);
-    uint8_t mvhd_times[] = {
+    });
+    WRITE_DYNAMIC({
         BE32(timescale),
         BE32(duration),
-    };
-    fwrite(mvhd_times, 1, sizeof(mvhd_times), f);
-    static const uint8_t mvhd_suffix[] = {
+    });
+    WRITE_CONST({
         BE32(0x00010000),        // rate (16.16 fixed)
         BE16(0x0100),            // volume (8.8 fixed)
         BE16(0),                 // reserved
@@ -387,18 +397,16 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
         BE32(0), BE32(0), BE32(0),
         BE32(0), BE32(0), BE32(0),
         BE32(2),                 // next_track_id
-    };
-    fwrite(mvhd_suffix, 1, sizeof(mvhd_suffix), f);
+    });
 
     // trak
-    uint8_t trak_header[] = {
+    WRITE_DYNAMIC({
         BE32(trak_size),
         't', 'r', 'a', 'k',
-    };
-    fwrite(trak_header, 1, sizeof(trak_header), f);
+    });
 
     // tkhd
-    static const uint8_t tkhd_prefix[] = {
+    WRITE_CONST({
         BE32(TKHD_SIZE),         // size
         't', 'k', 'h', 'd',      // box type
         BE32(0x03),              // version, flags (enabled + in_movie)
@@ -406,13 +414,11 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
         BE32(0),                 // modification_time
         BE32(1),                 // track_id
         BE32(0),                 // reserved
-    };
-    fwrite(tkhd_prefix, 1, sizeof(tkhd_prefix), f);
-    uint8_t tkhd_duration[] = {
+    });
+    WRITE_DYNAMIC({
         BE32(duration),
-    };
-    fwrite(tkhd_duration, 1, sizeof(tkhd_duration), f);
-    static const uint8_t tkhd_suffix[] = {
+    });
+    WRITE_CONST({
         BE32(0),                 // reserved
         BE32(0),                 // reserved
         BE16(0),                 // layer
@@ -429,43 +435,37 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
         BE32(0),                 // x
         BE32(0),                 // y
         BE32(0x40000000),        // w
-    };
-    fwrite(tkhd_suffix, 1, sizeof(tkhd_suffix), f);
-    uint8_t tkhd_dimensions[] = {
+    });
+    WRITE_DYNAMIC({
         BE32(enc->_width << 16),   // width 16.16
         BE32(enc->_height << 16),  // height 16.16
-    };
-    fwrite(tkhd_dimensions, 1, sizeof(tkhd_dimensions), f);
+    });
 
     // mdia
-    uint8_t mdia_header[] = {
+    WRITE_DYNAMIC({
         BE32(mdia_size),
         'm', 'd', 'i', 'a',
-    };
-    fwrite(mdia_header, 1, sizeof(mdia_header), f);
+    });
 
     // mdhd
-    static const uint8_t mdhd_prefix[] = {
+    WRITE_CONST({
         BE32(MDHD_SIZE),         // size
         'm', 'd', 'h', 'd',      // box type
         BE32(0),                 // version, flags
         BE32(0),                 // creation_time
         BE32(0),                 // modification_time
-    };
-    fwrite(mdhd_prefix, 1, sizeof(mdhd_prefix), f);
-    uint8_t mdhd_times[] = {
+    });
+    WRITE_DYNAMIC({
         BE32(timescale),
         BE32(duration),
-    };
-    fwrite(mdhd_times, 1, sizeof(mdhd_times), f);
-    static const uint8_t mdhd_suffix[] = {
+    });
+    WRITE_CONST({
         BE16(0x55C4),            // language ("und")
         BE16(0),                 // pre_defined
-    };
-    fwrite(mdhd_suffix, 1, sizeof(mdhd_suffix), f);
+    });
 
     // hdlr
-    static const uint8_t hdlr_box[] = {
+    WRITE_CONST({
         BE32(HDLR_SIZE),         // size
         'h', 'd', 'l', 'r',      // box type
         BE32(0),                 // version, flags
@@ -475,18 +475,16 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
         BE32(0),                 // reserved
         BE32(0),                 // reserved
         'V', 'i', 'd', 'e', 'o', 'H', 'a', 'n', 'd', 'l', 'e', 'r', 0x00,  // name
-    };
-    fwrite(hdlr_box, 1, sizeof(hdlr_box), f);
+    });
 
     // minf
-    uint8_t minf_header[] = {
+    WRITE_DYNAMIC({
         BE32(minf_size),
         'm', 'i', 'n', 'f',
-    };
-    fwrite(minf_header, 1, sizeof(minf_header), f);
+    });
 
     // vmhd
-    static const uint8_t vmhd_box[] = {
+    WRITE_CONST({
         BE32(VMHD_SIZE),         // size
         'v', 'm', 'h', 'd',      // box type
         BE32(1),                 // version, flags
@@ -494,11 +492,10 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
         BE16(0),                 // opcolor[0]
         BE16(0),                 // opcolor[1]
         BE16(0),                 // opcolor[2]
-    };
-    fwrite(vmhd_box, 1, sizeof(vmhd_box), f);
+    });
 
     // dinf + dref
-    static const uint8_t dinf_dref_box[] = {
+    WRITE_CONST({
         BE32(DINF_SIZE),         // dinf size
         'd', 'i', 'n', 'f',      // dinf box type
         BE32(DREF_SIZE),         // dref size
@@ -508,34 +505,29 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
         BE32(12),                // url size
         'u', 'r', 'l', ' ',      // url box type
         BE32(1),                 // flags (self-contained)
-    };
-    fwrite(dinf_dref_box, 1, sizeof(dinf_dref_box), f);
+    });
 
     // stbl
-    uint8_t stbl_header[] = {
+    WRITE_DYNAMIC({
         BE32(stbl_size),
         's', 't', 'b', 'l',
-    };
-    fwrite(stbl_header, 1, sizeof(stbl_header), f);
+    });
 
     // stsd
-    uint8_t stsd_size_arr[] = {
+    WRITE_DYNAMIC({
         BE32(stsd_size),
-    };
-    fwrite(stsd_size_arr, 1, sizeof(stsd_size_arr), f);
-    static const uint8_t stsd_header[] = {
+    });
+    WRITE_CONST({
         's', 't', 's', 'd',      // box type
         BE32(0),                 // version, flags
         BE32(1),                 // entry_count
-    };
-    fwrite(stsd_header, 1, sizeof(stsd_header), f);
+    });
 
     // avc1
-    uint8_t avc1_size_arr[] = {
+    WRITE_DYNAMIC({
         BE32(avc1_size),
-    };
-    fwrite(avc1_size_arr, 1, sizeof(avc1_size_arr), f);
-    static const uint8_t avc1_header[] = {
+    });
+    WRITE_CONST({
         'a', 'v', 'c', '1',      // box type
         BE32(0),                 // reserved
         BE16(0),                 // reserved
@@ -545,14 +537,12 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
         BE32(0),                 // pre_defined
         BE32(0),                 // pre_defined
         BE32(0),                 // pre_defined
-    };
-    fwrite(avc1_header, 1, sizeof(avc1_header), f);
-    uint8_t avc1_dimensions[] = {
+    });
+    WRITE_DYNAMIC({
         BE16(enc->_width),
         BE16(enc->_height),
-    };
-    fwrite(avc1_dimensions, 1, sizeof(avc1_dimensions), f);
-    static const uint8_t avc1_suffix[] = {
+    });
+    WRITE_CONST({
         BE32(0x00480000),        // horiz_resolution (16.16 fixed)
         BE32(0x00480000),        // vert_resolution (16.16 fixed)
         BE32(0),                 // reserved
@@ -562,129 +552,104 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
         BE32(0), BE32(0), BE32(0), BE32(0),
         BE16(24),                // depth
         BE16(0xFFFF),            // pre_defined
-    };
-    fwrite(avc1_suffix, 1, sizeof(avc1_suffix), f);
+    });
 
     // avcC
-    uint8_t avcC_size_arr[] = {
+    WRITE_DYNAMIC({
         BE32(avcC_size),
-    };
-    fwrite(avcC_size_arr, 1, sizeof(avcC_size_arr), f);
-    static const uint8_t avcC_header[] = {
+    });
+    WRITE_CONST({
         'a', 'v', 'c', 'C',      // box type
         0x01,                    // configurationVersion
-    };
-    fwrite(avcC_header, 1, sizeof(avcC_header), f);
-    uint8_t avcC_profile[] = {
+    });
+    WRITE_DYNAMIC({
         sps[1],   // AVCProfileIndication
         sps[2],   // profile_compatibility
         sps[3],   // AVCLevelIndication
-    };
-    fwrite(avcC_profile, 1, sizeof(avcC_profile), f);
-    static const uint8_t avcC_mid[] = {
+    });
+    WRITE_CONST({
         0xFF,  // lengthSizeMinusOne (4-byte lengths)
         0xE1,  // numOfSequenceParameterSets
-    };
-    fwrite(avcC_mid, 1, sizeof(avcC_mid), f);
-    uint8_t sps_len_arr[] = {
+    });
+    WRITE_DYNAMIC({
         BE16(sps_len),
-    };
-    fwrite(sps_len_arr, 1, sizeof(sps_len_arr), f);
+    });
     fwrite(sps, 1, sps_len, f);
-    uint8_t pps_header[] = {
+    WRITE_DYNAMIC({
         1,        // numOfPictureParameterSets
         BE16(pps_len),
-    };
-    fwrite(pps_header, 1, sizeof(pps_header), f);
+    });
     fwrite(pps, 1, pps_len, f);
 
     // stts
-    static const uint8_t stts_prefix[] = {
+    WRITE_CONST({
         BE32(STTS_SIZE),         // size
         's', 't', 't', 's',      // box type
         BE32(0),                 // version, flags
         BE32(1),                 // entry_count
-    };
-    fwrite(stts_prefix, 1, sizeof(stts_prefix), f);
-    uint8_t stts_entry[] = {
+    });
+    WRITE_DYNAMIC({
         BE32(enc->_frame_count),
         BE32(enc->_fps_den),
-    };
-    fwrite(stts_entry, 1, sizeof(stts_entry), f);
+    });
 
     // stsc
-    static const uint8_t stsc_prefix[] = {
+    WRITE_CONST({
         BE32(STSC_SIZE),         // size
         's', 't', 's', 'c',      // box type
         BE32(0),                 // version, flags
         BE32(1),                 // entry_count
         BE32(1),                 // first_chunk
-    };
-    fwrite(stsc_prefix, 1, sizeof(stsc_prefix), f);
-    uint8_t stsc_samples[] = {
+    });
+    WRITE_DYNAMIC({
         BE32(enc->_frame_count),  // samples_per_chunk
-    };
-    fwrite(stsc_samples, 1, sizeof(stsc_samples), f);
-    static const uint8_t stsc_suffix[] = {
+    });
+    WRITE_CONST({
         BE32(1),                 // sample_description_index
-    };
-    fwrite(stsc_suffix, 1, sizeof(stsc_suffix), f);
+    });
 
     // stsz
-    static const uint8_t stsz_prefix[] = {
+    WRITE_CONST({
         BE32(STSZ_SIZE),         // size
         's', 't', 's', 'z',      // box type
         BE32(0),                 // version, flags
-    };
-    fwrite(stsz_prefix, 1, sizeof(stsz_prefix), f);
-    uint8_t stsz_data[] = {
+    });
+    WRITE_DYNAMIC({
         BE32(sample_size),  // sample_size (constant)
         BE32(enc->_frame_count),
-    };
-    fwrite(stsz_data, 1, sizeof(stsz_data), f);
+    });
 
     // stco
-    static const uint8_t stco_prefix[] = {
+    WRITE_CONST({
         BE32(STCO_SIZE),         // size
         's', 't', 'c', 'o',      // box type
         BE32(0),                 // version, flags
         BE32(1),                 // entry_count
-    };
-    fwrite(stco_prefix, 1, sizeof(stco_prefix), f);
-    uint8_t stco_offset[] = {
+    });
+    WRITE_DYNAMIC({
         BE32(chunk_offset),
-    };
-    fwrite(stco_offset, 1, sizeof(stco_offset), f);
+    });
 
     // stss (sync samples - all frames are keyframes)
-    uint8_t stss_size_arr[] = {
+    WRITE_DYNAMIC({
         BE32(stss_size),
-    };
-    fwrite(stss_size_arr, 1, sizeof(stss_size_arr), f);
-    static const uint8_t stss_header[] = {
+    });
+    WRITE_CONST({
         's', 't', 's', 's',      // box type
         BE32(0),                 // version, flags
-    };
-    fwrite(stss_header, 1, sizeof(stss_header), f);
-    uint8_t stss_count[] = {
+    });
+    WRITE_DYNAMIC({
         BE32(enc->_frame_count),
-    };
-    fwrite(stss_count, 1, sizeof(stss_count), f);
+    });
     for (uint32_t i = 1; i <= enc->_frame_count; i++) {
-        uint8_t data[] = {
-            BE32(i),
-        };
-        fwrite(data, 1, sizeof(data), f);
+        WRITE_DYNAMIC({ BE32(i) });
     }
 
     // Fix mdat size
     long final_pos = ftell(f);
     uint32_t mdat_size = (uint32_t)(end_pos - enc->_mdat_start_pos);
     fseek(f, enc->_mdat_start_pos, SEEK_SET);
-    uint8_t mdat_size_arr[] = {
-        BE32(mdat_size),
-    };
-    fwrite(mdat_size_arr, 1, sizeof(mdat_size_arr), f);
+    WRITE_DYNAMIC({ BE32(mdat_size) });
     fseek(f, end_pos, SEEK_SET);
     fflush(f);
 }

@@ -14,44 +14,42 @@
 
 // Bitstream writer for Exp-Golomb encoding
 typedef struct {
-    uint8_t *buf;
-    int cap;
-    int byte_pos;
-    int bit_pos;  // Bits remaining in current byte (8 = fresh byte)
+    uint8_t *start;          // Output buffer start
+    uint8_t *buf;            // Current write position
+    uint64_t to_write;       // Bit accumulator (MSB-aligned)
+    int      bits_to_write;  // Valid bits in to_write (0-63)
 } bitstream_t;
 
 static void bs_init(bitstream_t *bs, uint8_t *buf, int cap) {
+    (void)cap;
+    bs->start = buf;
     bs->buf = buf;
-    bs->cap = cap;
-    bs->byte_pos = 0;
-    bs->bit_pos = 8;
-    if (cap > 0) buf[0] = 0;
+    bs->to_write = 0;
+    bs->bits_to_write = 0;
 }
 
 static void bs_write_bits(bitstream_t *bs, uint32_t val, int n) {
-    while (n > 0) {
-        int bits_to_write = n < bs->bit_pos ? n : bs->bit_pos;
-        int shift = bs->bit_pos - bits_to_write;
-        uint32_t mask = (1 << bits_to_write) - 1;
-        uint32_t bits = (val >> (n - bits_to_write)) & mask;
-        bs->buf[bs->byte_pos] |= bits << shift;
-        bs->bit_pos -= bits_to_write;
-        n -= bits_to_write;
-        if (bs->bit_pos == 0) {
-            bs->byte_pos++;
-            if (bs->byte_pos < bs->cap) bs->buf[bs->byte_pos] = 0;
-            bs->bit_pos = 8;
-        }
+    bs->to_write |= (uint64_t)val << (64 - bs->bits_to_write - n);
+    bs->bits_to_write += n;
+    while (bs->bits_to_write >= 8) {
+        *bs->buf++ = (uint8_t)(bs->to_write >> 56);
+        bs->to_write <<= 8;
+        bs->bits_to_write -= 8;
     }
+}
+
+// Like stdc_first_leading_one.
+static int first_leading_one_u32(uint32_t val) {
+    int bits = 0;
+    while (val) { bits++; val >>= 1; }
+    return bits;
 }
 
 static void bs_write_ue(bitstream_t *bs, uint32_t val) {
     val++;
-    int bits = 0;
-    uint32_t tmp = val;
-    while (tmp) { bits++; tmp >>= 1; }
-    for (int i = 0; i < bits - 1; i++) bs_write_bits(bs, 0, 1);
-    bs_write_bits(bs, val, bits);
+    int val_bits = first_leading_one_u32(val);
+    int padding_bits = val_bits - 1;
+    bs_write_bits(bs, val, val_bits + padding_bits);
 }
 
 static void bs_write_se(bitstream_t *bs, int32_t val) {
@@ -60,14 +58,17 @@ static void bs_write_se(bitstream_t *bs, int32_t val) {
 }
 
 static void bs_byte_align(bitstream_t *bs) {
-    // Write zero bits until byte-aligned (for pcm_alignment_zero_bit)
-    while (bs->bit_pos != 8) {
-        bs_write_bits(bs, 0, 1);
+    if (bs->bits_to_write > 0) {
+        *bs->buf++ = (uint8_t)(bs->to_write >> 56);
+        bs->to_write = 0;
+        bs->bits_to_write = 0;
     }
 }
 
+// Call bs_byte_align(bs) before calling this function.
 static int bs_pos(bitstream_t *bs) {
-    return bs->bit_pos == 8 ? bs->byte_pos : bs->byte_pos + 1;
+    assert(bs->bits_to_write == 0);
+    return (int)(bs->buf - bs->start);
 }
 
 // Big-endian writers

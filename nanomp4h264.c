@@ -176,6 +176,26 @@ void nanomp4h264_write_frame(nanomp4h264_t *enc, const uint8_t *data,
     int mb_count = enc->_mb_width * enc->_mb_height;
     uint32_t bytes_written = 0;
 
+    // Record chunk offset before writing frame data
+    if (enc->_frame_count >= enc->_chunk_offsets_capacity) {
+        uint32_t new_capacity = enc->_chunk_offsets_capacity == 0 ? 16 : enc->_chunk_offsets_capacity * 2;
+        uint32_t *new_offsets = realloc(enc->_chunk_offsets, new_capacity * sizeof(uint32_t));
+        if (!new_offsets) {
+            enc->_error = 1;
+            return;
+        }
+        enc->_chunk_offsets = new_offsets;
+        uint32_t *new_sample_counts = realloc(enc->_chunk_sample_counts, new_capacity * sizeof(uint32_t));
+        if (!new_sample_counts) {
+            enc->_error = 1;
+            return;
+        }
+        enc->_chunk_sample_counts = new_sample_counts;
+        enc->_chunk_offsets_capacity = new_capacity;
+    }
+    enc->_chunk_offsets[enc->_frame_count] = (uint32_t)ftell(f);
+    enc->_chunk_sample_counts[enc->_frame_count] = 1;
+
     WRITE_DYNAMIC({ BE32(enc->_frame_nal_size) });
 
     // NAL header (IDR slice, nal_ref_idc=3, nal_unit_type=5) + slice header + first MB header
@@ -317,17 +337,24 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
     uint32_t duration = enc->_frame_count * enc->_fps_den;
     uint32_t timescale = enc->_fps_num;
     uint32_t sample_size = enc->_frame_nal_size + 4;
-    uint32_t chunk_offset = (uint32_t)(enc->_mdat_start_pos + 8);
+
+    // Count stsc entries (run-length encoded: new entry when sample count changes)
+    uint32_t stsc_entry_count = 0;
+    for (uint32_t i = 0; i < enc->_frame_count; i++) {
+        if (i == 0 || enc->_chunk_sample_counts[i] != enc->_chunk_sample_counts[i - 1]) {
+            stsc_entry_count++;
+        }
+    }
 
     // Calculate box sizes (bottom-up)
-    enum { STCO_SIZE = 20 };
+    uint32_t stco_size = 16 + 4 * enc->_frame_count;  // header(8) + version/flags(4) + entry_count(4) + offsets(4*N)
     enum { STSZ_SIZE = 20 };
-    enum { STSC_SIZE = 28 };
+    uint32_t stsc_size = 16 + 12 * stsc_entry_count;  // header(8) + version/flags(4) + entry_count(4) + entries(12*N)
     enum { STTS_SIZE = 24 };
     uint32_t avcC_size = 8 + 8 + sps_len + 3 + sizeof(pps);  // header + config(6) + sps_len_field(2) + sps + numPPS(1) + pps_len_field(2) + pps
     uint32_t avc1_size = 8 + 78 + avcC_size;
     uint32_t stsd_size = 8 + 8 + avc1_size;
-    uint32_t stbl_size = 8 + stsd_size + STTS_SIZE + STSC_SIZE + STSZ_SIZE + STCO_SIZE;
+    uint32_t stbl_size = 8 + stsd_size + STTS_SIZE + stsc_size + STSZ_SIZE + stco_size;
     enum { DREF_SIZE = 28 };
     enum { DINF_SIZE = 36 };
     enum { VMHD_SIZE = 20 };
@@ -571,20 +598,24 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
         BE32(enc->_fps_den),
     });
 
-    WRITE_CONST({
-        // stsc
-        BE32(STSC_SIZE),         // size
-        's', 't', 's', 'c',      // box type
-        BE32(0),                 // version, flags
-        BE32(1),                 // entry_count
-        BE32(1),                 // first_chunk
-    });
     WRITE_DYNAMIC({
-        BE32(enc->_frame_count),  // samples_per_chunk
+        // stsc
+        BE32(stsc_size),         // size
+        's', 't', 's', 'c',
+        BE32(0),                 // version, flags
+        BE32(stsc_entry_count),  // entry_count
     });
-    WRITE_CONST({
-        BE32(1),                 // sample_description_index
+    for (uint32_t i = 0; i < enc->_frame_count; i++) {
+        if (i == 0 || enc->_chunk_sample_counts[i] != enc->_chunk_sample_counts[i - 1]) {
+            WRITE_DYNAMIC({
+                BE32(i + 1),                        // first_chunk (1-indexed)
+                BE32(enc->_chunk_sample_counts[i]), // samples_per_chunk
+                BE32(1),                            // sample_description_index
+            });
+        }
+    }
 
+    WRITE_CONST({
         // stsz
         BE32(STSZ_SIZE),         // size
         's', 't', 's', 'z',      // box type
@@ -595,16 +626,16 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
         BE32(enc->_frame_count),
     });
 
-    WRITE_CONST({
-        // stco
-        BE32(STCO_SIZE),         // size
-        's', 't', 'c', 'o',      // box type
-        BE32(0),                 // version, flags
-        BE32(1),                 // entry_count
-    });
     WRITE_DYNAMIC({
-        BE32(chunk_offset),
+        // stco
+        BE32(stco_size),         // size
+        's', 't', 'c', 'o',
+        BE32(0),                 // version, flags
+        BE32(enc->_frame_count), // entry_count
     });
+    for (uint32_t i = 0; i < enc->_frame_count; i++) {
+        WRITE_DYNAMIC({ BE32(enc->_chunk_offsets[i]) });
+    }
 
     // Fix mdat size
     long final_pos = ftell(f);
@@ -622,6 +653,11 @@ void nanomp4h264_close(nanomp4h264_t *enc) {
     }
     if (enc->_file) fclose(enc->_file);
     enc->_file = NULL;
+    free(enc->_chunk_offsets);
+    free(enc->_chunk_sample_counts);
+    enc->_chunk_offsets = NULL;
+    enc->_chunk_sample_counts = NULL;
+    enc->_chunk_offsets_capacity = 0;
 }
 
 int nanomp4h264_get_error(const nanomp4h264_t *enc) {

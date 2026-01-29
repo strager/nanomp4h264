@@ -60,6 +60,9 @@ typedef struct nanomp4h264 {
     long _mdat_start_pos;
     uint32_t _frame_count;
     uint32_t _frame_nal_size;
+    uint32_t *_chunk_offsets;
+    uint32_t *_chunk_sample_counts;
+    uint32_t _chunk_offsets_capacity;
 } nanomp4h264_t;
 
 // Open encoder and create output file.

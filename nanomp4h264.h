@@ -58,19 +58,17 @@ typedef struct nanomp4h264_config {
     int audio_channels;
 } nanomp4h264_config_t;
 
-// Internal state for stsc (sample-to-chunk) table
-typedef struct nanomp4h264_stsc_state {
-    uint8_t *data;        // Pre-encoded stsc entries (12 bytes each)
-    uint32_t entry_count;
-    uint32_t capacity;    // Capacity in entries (not bytes)
-} nanomp4h264_stsc_state_t;
-
-// Internal state for stco (chunk offset) table
-typedef struct nanomp4h264_stco_state {
-    uint8_t *data;        // Pre-encoded offsets (4 bytes each, big-endian)
-    uint32_t count;
-    uint32_t capacity;    // Capacity in entries (not bytes)
-} nanomp4h264_stco_state_t;
+// Internal state for chunk tracking (stco + stsc tables)
+typedef struct nanomp4h264_chunk_state {
+    // stco (chunk offset table)
+    uint8_t *stco_data;       // Pre-encoded offsets (4 bytes each, big-endian)
+    uint32_t stco_count;
+    uint32_t stco_capacity;
+    // stsc (sample-to-chunk table)
+    uint8_t *stsc_data;       // Pre-encoded entries (12 bytes each)
+    uint32_t stsc_entry_count;
+    uint32_t stsc_capacity;
+} nanomp4h264_chunk_state_t;
 
 // Encoder state (allocate this yourself, do not access fields directly)
 typedef struct nanomp4h264 {
@@ -83,17 +81,14 @@ typedef struct nanomp4h264 {
     long _mdat_start_pos;
     uint32_t _frame_count;
     uint32_t _frame_nal_size;
-    nanomp4h264_stco_state_t _video_stco;
-    nanomp4h264_stsc_state_t _video_stsc;
+    nanomp4h264_chunk_state_t _video_chunks;
 
     // Audio configuration
     int _audio_sample_rate;
     int _audio_channels;
 
     // Audio chunk tracking
-    nanomp4h264_stco_state_t _audio_stco;
-    nanomp4h264_stsc_state_t _audio_stsc;
-    uint32_t _audio_chunk_count;
+    nanomp4h264_chunk_state_t _audio_chunks;
     uint64_t _audio_total_samples;
 } nanomp4h264_t;
 

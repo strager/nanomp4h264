@@ -28,51 +28,45 @@ static uint32_t load_be32(const uint8_t *p) {
            ((uint32_t)p[2] << 8) | (uint32_t)p[3];
 }
 
-// Append an stsc entry if samples_per_chunk changed from the last entry.
+// Append a chunk with the given offset and sample count.
 // Returns 0 on success, non-zero on allocation failure.
-static int nanomp4h264_stsc_append(nanomp4h264_stsc_state_t *stsc, uint32_t chunk_index, uint32_t samples_per_chunk) {
-    // Check if we need a new entry
+static int nanomp4h264_chunk_append(nanomp4h264_chunk_state_t *chunks, uint32_t offset, uint32_t samples_per_chunk) {
+    // Append to stco
+    if (chunks->stco_count >= chunks->stco_capacity) {
+        uint32_t new_capacity = chunks->stco_capacity == 0 ? 16 : chunks->stco_capacity * 2;
+        uint8_t *new_data = realloc(chunks->stco_data, new_capacity * 4);
+        if (!new_data) return 1;
+        chunks->stco_data = new_data;
+        chunks->stco_capacity = new_capacity;
+    }
+    store_be32(chunks->stco_data + chunks->stco_count * 4, offset);
+
+    // Append to stsc if samples_per_chunk changed
     int need_new_entry = 0;
-    if (stsc->entry_count == 0) {
+    if (chunks->stsc_entry_count == 0) {
         need_new_entry = 1;
     } else {
-        uint32_t last_samples = load_be32(stsc->data + (stsc->entry_count - 1) * 12 + 4);
+        uint32_t last_samples = load_be32(chunks->stsc_data + (chunks->stsc_entry_count - 1) * 12 + 4);
         if (samples_per_chunk != last_samples) {
             need_new_entry = 1;
         }
     }
-
     if (need_new_entry) {
-        // Grow array if needed
-        if (stsc->entry_count >= stsc->capacity) {
-            uint32_t new_capacity = stsc->capacity == 0 ? 4 : stsc->capacity * 2;
-            uint8_t *new_data = realloc(stsc->data, new_capacity * 12);
+        if (chunks->stsc_entry_count >= chunks->stsc_capacity) {
+            uint32_t new_capacity = chunks->stsc_capacity == 0 ? 4 : chunks->stsc_capacity * 2;
+            uint8_t *new_data = realloc(chunks->stsc_data, new_capacity * 12);
             if (!new_data) return 1;
-            stsc->data = new_data;
-            stsc->capacity = new_capacity;
+            chunks->stsc_data = new_data;
+            chunks->stsc_capacity = new_capacity;
         }
-
-        // Append entry
-        uint8_t *entry = stsc->data + stsc->entry_count * 12;
-        store_be32(entry + 0, chunk_index + 1);  // 1-indexed
+        uint8_t *entry = chunks->stsc_data + chunks->stsc_entry_count * 12;
+        store_be32(entry + 0, chunks->stco_count + 1);  // 1-indexed chunk number
         store_be32(entry + 4, samples_per_chunk);
         store_be32(entry + 8, 1);  // sample_description_index
-        stsc->entry_count++;
+        chunks->stsc_entry_count++;
     }
-    return 0;
-}
 
-// Append a chunk offset. Returns 0 on success, non-zero on allocation failure.
-static int nanomp4h264_stco_append(nanomp4h264_stco_state_t *stco, uint32_t offset) {
-    if (stco->count >= stco->capacity) {
-        uint32_t new_capacity = stco->capacity == 0 ? 16 : stco->capacity * 2;
-        uint8_t *new_data = realloc(stco->data, new_capacity * 4);
-        if (!new_data) return 1;
-        stco->data = new_data;
-        stco->capacity = new_capacity;
-    }
-    store_be32(stco->data + stco->count * 4, offset);
-    stco->count++;
+    chunks->stco_count++;
     return 0;
 }
 
@@ -242,14 +236,8 @@ void nanomp4h264_write_frame(nanomp4h264_t *enc, const uint8_t *data,
     int mb_count = enc->_mb_width * enc->_mb_height;
     uint32_t bytes_written = 0;
 
-    // Record chunk offset before writing frame data
-    if (nanomp4h264_stco_append(&enc->_video_stco, (uint32_t)ftell(f)) != 0) {
-        enc->_error = 1;
-        return;
-    }
-
-    // Update video stsc data (RLE-encoded, 1 sample per chunk)
-    if (nanomp4h264_stsc_append(&enc->_video_stsc, enc->_frame_count, 1) != 0) {
+    // Record chunk offset and sample count
+    if (nanomp4h264_chunk_append(&enc->_video_chunks, (uint32_t)ftell(f), 1) != 0) {
         enc->_error = 1;
         return;
     }
@@ -339,19 +327,11 @@ void nanomp4h264_write_audio(nanomp4h264_t *enc, const void *data, size_t data_s
     // Calculate sample count: data_size / (2 bytes * channels)
     uint32_t sample_count = (uint32_t)(data_size / (2 * enc->_audio_channels));
 
-    // Record chunk offset
-    if (nanomp4h264_stco_append(&enc->_audio_stco, (uint32_t)ftell(f)) != 0) {
+    // Record chunk offset and sample count
+    if (nanomp4h264_chunk_append(&enc->_audio_chunks, (uint32_t)ftell(f), sample_count) != 0) {
         enc->_error = 1;
         return;
     }
-
-    // Update audio stsc data (RLE-encoded)
-    if (nanomp4h264_stsc_append(&enc->_audio_stsc, enc->_audio_chunk_count, sample_count) != 0) {
-        enc->_error = 1;
-        return;
-    }
-
-    enc->_audio_chunk_count++;
     enc->_audio_total_samples += sample_count;
 
     if (host_is_little_endian()) {
@@ -447,14 +427,14 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
     uint32_t sample_size = enc->_frame_nal_size + 4;
 
     // Determine if audio exists
-    int has_audio = (enc->_audio_sample_rate > 0 && enc->_audio_channels > 0 && enc->_audio_chunk_count > 0);
+    int has_audio = (enc->_audio_sample_rate > 0 && enc->_audio_channels > 0 && enc->_audio_chunks.stco_count > 0);
 
     // Use pre-computed stsc entry counts
-    uint32_t stsc_entry_count = enc->_video_stsc.entry_count;
-    uint32_t audio_stsc_entry_count = enc->_audio_stsc.entry_count;
+    uint32_t stsc_entry_count = enc->_video_chunks.stsc_entry_count;
+    uint32_t audio_stsc_entry_count = enc->_audio_chunks.stsc_entry_count;
 
     // Calculate box sizes (bottom-up)
-    uint32_t stco_size = 16 + 4 * enc->_video_stco.count;  // header(8) + version/flags(4) + entry_count(4) + offsets(4*N)
+    uint32_t stco_size = 16 + 4 * enc->_video_chunks.stco_count;  // header(8) + version/flags(4) + entry_count(4) + offsets(4*N)
     enum { STSZ_SIZE = 20 };
     uint32_t stsc_size = 16 + 12 * stsc_entry_count;  // header(8) + version/flags(4) + entry_count(4) + entries(12*N)
     enum { STTS_SIZE = 24 };
@@ -478,7 +458,7 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
     enum { AUDIO_HDLR_SIZE = 46 };
     uint32_t audio_stsd_size = 8 + 8 + SOWT_SIZE;
     uint32_t audio_stsc_size = 16 + 12 * audio_stsc_entry_count;
-    uint32_t audio_stco_size = 16 + 4 * enc->_audio_stco.count;
+    uint32_t audio_stco_size = 16 + 4 * enc->_audio_chunks.stco_count;
     uint32_t audio_stbl_size = 8 + audio_stsd_size + STTS_SIZE + audio_stsc_size + STSZ_SIZE + audio_stco_size;
     uint32_t audio_minf_size = 8 + SMHD_SIZE + DINF_SIZE + audio_stbl_size;
     uint32_t audio_mdia_size = 8 + MDHD_SIZE + AUDIO_HDLR_SIZE + audio_minf_size;
@@ -725,7 +705,7 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
         BE32(0),                 // version, flags
         BE32(stsc_entry_count),  // entry_count
     });
-    fwrite(enc->_video_stsc.data, 12, enc->_video_stsc.entry_count, f);
+    fwrite(enc->_video_chunks.stsc_data, 12, enc->_video_chunks.stsc_entry_count, f);
 
     WRITE_CONST({
         // stsz
@@ -743,9 +723,9 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
         BE32(stco_size),         // size
         's', 't', 'c', 'o',
         BE32(0),                 // version, flags
-        BE32(enc->_video_stco.count), // entry_count
+        BE32(enc->_video_chunks.stco_count), // entry_count
     });
-    fwrite(enc->_video_stco.data, 4, enc->_video_stco.count, f);
+    fwrite(enc->_video_chunks.stco_data, 4, enc->_video_chunks.stco_count, f);
 
     // Write audio track if present
     if (has_audio) {
@@ -907,7 +887,7 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
             BE32(0),                 // version, flags
             BE32(audio_stsc_entry_count),  // entry_count
         });
-        fwrite(enc->_audio_stsc.data, 12, enc->_audio_stsc.entry_count, f);
+        fwrite(enc->_audio_chunks.stsc_data, 12, enc->_audio_chunks.stsc_entry_count, f);
 
         WRITE_CONST({
             // stsz
@@ -923,9 +903,9 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
             BE32(audio_stco_size),   // size
             's', 't', 'c', 'o',
             BE32(0),                 // version, flags
-            BE32(enc->_audio_stco.count), // entry_count
+            BE32(enc->_audio_chunks.stco_count), // entry_count
         });
-        fwrite(enc->_audio_stco.data, 4, enc->_audio_stco.count, f);
+        fwrite(enc->_audio_chunks.stco_data, 4, enc->_audio_chunks.stco_count, f);
     }
 
     // Fix mdat size
@@ -944,14 +924,14 @@ void nanomp4h264_close(nanomp4h264_t *enc) {
     }
     if (enc->_file) fclose(enc->_file);
     enc->_file = NULL;
-    free(enc->_video_stco.data);
-    free(enc->_video_stsc.data);
-    enc->_video_stco.data = NULL;
-    enc->_video_stsc.data = NULL;
-    free(enc->_audio_stco.data);
-    free(enc->_audio_stsc.data);
-    enc->_audio_stco.data = NULL;
-    enc->_audio_stsc.data = NULL;
+    free(enc->_video_chunks.stco_data);
+    free(enc->_video_chunks.stsc_data);
+    enc->_video_chunks.stco_data = NULL;
+    enc->_video_chunks.stsc_data = NULL;
+    free(enc->_audio_chunks.stco_data);
+    free(enc->_audio_chunks.stsc_data);
+    enc->_audio_chunks.stco_data = NULL;
+    enc->_audio_chunks.stsc_data = NULL;
 }
 
 int nanomp4h264_get_error(const nanomp4h264_t *enc) {

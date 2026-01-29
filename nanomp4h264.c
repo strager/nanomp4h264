@@ -62,6 +62,20 @@ static int nanomp4h264_stsc_append(nanomp4h264_stsc_state_t *stsc, uint32_t chun
     return 0;
 }
 
+// Append a chunk offset. Returns 0 on success, non-zero on allocation failure.
+static int nanomp4h264_stco_append(nanomp4h264_stco_state_t *stco, uint32_t offset) {
+    if (stco->count >= stco->capacity) {
+        uint32_t new_capacity = stco->capacity == 0 ? 16 : stco->capacity * 2;
+        uint8_t *new_data = realloc(stco->data, new_capacity * 4);
+        if (!new_data) return 1;
+        stco->data = new_data;
+        stco->capacity = new_capacity;
+    }
+    store_be32(stco->data + stco->count * 4, offset);
+    stco->count++;
+    return 0;
+}
+
 // Bitstream writer for Exp-Golomb encoding
 typedef struct {
     uint8_t *start;          // Output buffer start
@@ -229,17 +243,10 @@ void nanomp4h264_write_frame(nanomp4h264_t *enc, const uint8_t *data,
     uint32_t bytes_written = 0;
 
     // Record chunk offset before writing frame data
-    if (enc->_frame_count >= enc->_chunk_offsets_capacity) {
-        uint32_t new_capacity = enc->_chunk_offsets_capacity == 0 ? 16 : enc->_chunk_offsets_capacity * 2;
-        uint32_t *new_offsets = realloc(enc->_chunk_offsets, new_capacity * sizeof(uint32_t));
-        if (!new_offsets) {
-            enc->_error = 1;
-            return;
-        }
-        enc->_chunk_offsets = new_offsets;
-        enc->_chunk_offsets_capacity = new_capacity;
+    if (nanomp4h264_stco_append(&enc->_video_stco, (uint32_t)ftell(f)) != 0) {
+        enc->_error = 1;
+        return;
     }
-    enc->_chunk_offsets[enc->_frame_count] = (uint32_t)ftell(f);
 
     // Update video stsc data (RLE-encoded, 1 sample per chunk)
     if (nanomp4h264_stsc_append(&enc->_video_stsc, enc->_frame_count, 1) != 0) {
@@ -332,20 +339,11 @@ void nanomp4h264_write_audio(nanomp4h264_t *enc, const void *data, size_t data_s
     // Calculate sample count: data_size / (2 bytes * channels)
     uint32_t sample_count = (uint32_t)(data_size / (2 * enc->_audio_channels));
 
-    // Grow chunk offset array if needed
-    if (enc->_audio_chunk_count >= enc->_audio_chunk_offsets_capacity) {
-        uint32_t new_capacity = enc->_audio_chunk_offsets_capacity == 0 ? 16 : enc->_audio_chunk_offsets_capacity * 2;
-        uint32_t *new_offsets = realloc(enc->_audio_chunk_offsets, new_capacity * sizeof(uint32_t));
-        if (!new_offsets) {
-            enc->_error = 1;
-            return;
-        }
-        enc->_audio_chunk_offsets = new_offsets;
-        enc->_audio_chunk_offsets_capacity = new_capacity;
-    }
-
     // Record chunk offset
-    enc->_audio_chunk_offsets[enc->_audio_chunk_count] = (uint32_t)ftell(f);
+    if (nanomp4h264_stco_append(&enc->_audio_stco, (uint32_t)ftell(f)) != 0) {
+        enc->_error = 1;
+        return;
+    }
 
     // Update audio stsc data (RLE-encoded)
     if (nanomp4h264_stsc_append(&enc->_audio_stsc, enc->_audio_chunk_count, sample_count) != 0) {
@@ -456,7 +454,7 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
     uint32_t audio_stsc_entry_count = enc->_audio_stsc.entry_count;
 
     // Calculate box sizes (bottom-up)
-    uint32_t stco_size = 16 + 4 * enc->_frame_count;  // header(8) + version/flags(4) + entry_count(4) + offsets(4*N)
+    uint32_t stco_size = 16 + 4 * enc->_video_stco.count;  // header(8) + version/flags(4) + entry_count(4) + offsets(4*N)
     enum { STSZ_SIZE = 20 };
     uint32_t stsc_size = 16 + 12 * stsc_entry_count;  // header(8) + version/flags(4) + entry_count(4) + entries(12*N)
     enum { STTS_SIZE = 24 };
@@ -480,7 +478,7 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
     enum { AUDIO_HDLR_SIZE = 46 };
     uint32_t audio_stsd_size = 8 + 8 + SOWT_SIZE;
     uint32_t audio_stsc_size = 16 + 12 * audio_stsc_entry_count;
-    uint32_t audio_stco_size = 16 + 4 * enc->_audio_chunk_count;
+    uint32_t audio_stco_size = 16 + 4 * enc->_audio_stco.count;
     uint32_t audio_stbl_size = 8 + audio_stsd_size + STTS_SIZE + audio_stsc_size + STSZ_SIZE + audio_stco_size;
     uint32_t audio_minf_size = 8 + SMHD_SIZE + DINF_SIZE + audio_stbl_size;
     uint32_t audio_mdia_size = 8 + MDHD_SIZE + AUDIO_HDLR_SIZE + audio_minf_size;
@@ -745,11 +743,9 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
         BE32(stco_size),         // size
         's', 't', 'c', 'o',
         BE32(0),                 // version, flags
-        BE32(enc->_frame_count), // entry_count
+        BE32(enc->_video_stco.count), // entry_count
     });
-    for (uint32_t i = 0; i < enc->_frame_count; i++) {
-        WRITE_DYNAMIC({ BE32(enc->_chunk_offsets[i]) });
-    }
+    fwrite(enc->_video_stco.data, 4, enc->_video_stco.count, f);
 
     // Write audio track if present
     if (has_audio) {
@@ -927,11 +923,9 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
             BE32(audio_stco_size),   // size
             's', 't', 'c', 'o',
             BE32(0),                 // version, flags
-            BE32(enc->_audio_chunk_count), // entry_count
+            BE32(enc->_audio_stco.count), // entry_count
         });
-        for (uint32_t i = 0; i < enc->_audio_chunk_count; i++) {
-            WRITE_DYNAMIC({ BE32(enc->_audio_chunk_offsets[i]) });
-        }
+        fwrite(enc->_audio_stco.data, 4, enc->_audio_stco.count, f);
     }
 
     // Fix mdat size
@@ -950,14 +944,13 @@ void nanomp4h264_close(nanomp4h264_t *enc) {
     }
     if (enc->_file) fclose(enc->_file);
     enc->_file = NULL;
-    free(enc->_chunk_offsets);
+    free(enc->_video_stco.data);
     free(enc->_video_stsc.data);
-    enc->_chunk_offsets = NULL;
+    enc->_video_stco.data = NULL;
     enc->_video_stsc.data = NULL;
-    enc->_chunk_offsets_capacity = 0;
-    free(enc->_audio_chunk_offsets);
+    free(enc->_audio_stco.data);
     free(enc->_audio_stsc.data);
-    enc->_audio_chunk_offsets = NULL;
+    enc->_audio_stco.data = NULL;
     enc->_audio_stsc.data = NULL;
 }
 

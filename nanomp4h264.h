@@ -29,6 +29,7 @@
 #ifndef NANOMP4H264_H
 #define NANOMP4H264_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -41,12 +42,20 @@ typedef enum nanomp4h264_format {
     NANOMP4H264_FORMAT_RGB888 = 0,
 } nanomp4h264_format_t;
 
+typedef enum nanomp4h264_audio_format {
+    // Native byte order.
+    NANOMP4H264_AUDIO_FORMAT_PCM16 = 1,
+} nanomp4h264_audio_format_t;
+
 // Encoder configuration
 typedef struct nanomp4h264_config {
     int width;    // Frame width in pixels
     int height;   // Frame height in pixels
     int fps_num;  // Framerate numerator (e.g., 30 for 30fps, 30000 for 29.97fps)
     int fps_den;  // Framerate denominator (e.g., 1 for 30fps, 1001 for 29.97fps)
+
+    int audio_sample_rate;
+    int audio_channels;
 } nanomp4h264_config_t;
 
 // Encoder state (allocate this yourself, do not access fields directly)
@@ -63,6 +72,17 @@ typedef struct nanomp4h264 {
     uint32_t *_chunk_offsets;
     uint32_t *_chunk_sample_counts;
     uint32_t _chunk_offsets_capacity;
+
+    // Audio configuration
+    int _audio_sample_rate;
+    int _audio_channels;
+
+    // Audio chunk tracking
+    uint32_t *_audio_chunk_offsets;
+    uint32_t *_audio_chunk_sample_counts;
+    uint32_t _audio_chunk_count;
+    uint32_t _audio_chunk_offsets_capacity;
+    uint64_t _audio_total_samples;
 } nanomp4h264_t;
 
 // Open encoder and create output file.
@@ -80,6 +100,15 @@ void nanomp4h264_open(nanomp4h264_t *enc, const nanomp4h264_config_t *config, co
 //   data       - Pointer to pixel data (size depends on format)
 //   format     - Pixel format of the input data
 void nanomp4h264_write_frame(nanomp4h264_t *enc, const uint8_t *data, nanomp4h264_format_t format);
+
+// Encode and write audio data.
+//
+// Parameters:
+//   enc        - Encoder from nanomp4h264_open()
+//   data       - Pointer to audio data
+//   data_size  - Number of bytes to write
+//   format     - Format of each audio sample in the input data
+void nanomp4h264_write_audio(nanomp4h264_t *enc, const void *data, size_t data_size, nanomp4h264_audio_format_t format);
 
 // Flush encoder and update MP4 metadata.
 //

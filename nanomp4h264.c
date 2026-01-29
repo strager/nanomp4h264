@@ -12,6 +12,8 @@
 #define BE32(x) ((x) >> 24) & 0xFF, ((x) >> 16) & 0xFF, ((x) >> 8) & 0xFF, (x) & 0xFF
 #define BE16(x) ((x) >> 8) & 0xFF, (x) & 0xFF
 
+#define LE16(x) (x) & 0xFF, ((x) >> 8) & 0xFF
+
 // Bitstream writer for Exp-Golomb encoding
 typedef struct {
     uint8_t *start;          // Output buffer start
@@ -130,6 +132,8 @@ void nanomp4h264_open(nanomp4h264_t *enc, const nanomp4h264_config_t *config,
     enc->_height = config->height;
     enc->_fps_num = config->fps_num;
     enc->_fps_den = config->fps_den;
+    enc->_audio_sample_rate = config->audio_sample_rate;
+    enc->_audio_channels = config->audio_channels;
 
     // Compute padded dimensions (multiple of 16)
     enc->_padded_width = (enc->_width + 15) & ~15;
@@ -257,6 +261,65 @@ void nanomp4h264_write_frame(nanomp4h264_t *enc, const uint8_t *data,
     enc->_frame_count++;
 }
 
+static int host_is_little_endian(void) {
+    uint16_t test = 0x0102;
+    uint8_t b;
+    memcpy(&b, &test, 1);
+    return b == 0x02;
+}
+
+void nanomp4h264_write_audio(nanomp4h264_t *enc, const void *data, size_t data_size,
+                             nanomp4h264_audio_format_t format) {
+    if (enc->_error) return;
+
+    (void)format;  // Only PCM16 supported currently
+
+    // Validate audio is configured
+    if (enc->_audio_sample_rate <= 0 || enc->_audio_channels <= 0) {
+        enc->_error = 1;
+        return;
+    }
+
+    FILE *f = enc->_file;
+
+    // Calculate sample count: data_size / (2 bytes * channels)
+    uint32_t sample_count = (uint32_t)(data_size / (2 * enc->_audio_channels));
+
+    // Grow chunk arrays if needed
+    if (enc->_audio_chunk_count >= enc->_audio_chunk_offsets_capacity) {
+        uint32_t new_capacity = enc->_audio_chunk_offsets_capacity == 0 ? 16 : enc->_audio_chunk_offsets_capacity * 2;
+        uint32_t *new_offsets = realloc(enc->_audio_chunk_offsets, new_capacity * sizeof(uint32_t));
+        if (!new_offsets) {
+            enc->_error = 1;
+            return;
+        }
+        enc->_audio_chunk_offsets = new_offsets;
+        uint32_t *new_sample_counts = realloc(enc->_audio_chunk_sample_counts, new_capacity * sizeof(uint32_t));
+        if (!new_sample_counts) {
+            enc->_error = 1;
+            return;
+        }
+        enc->_audio_chunk_sample_counts = new_sample_counts;
+        enc->_audio_chunk_offsets_capacity = new_capacity;
+    }
+
+    // Record chunk offset and sample count
+    enc->_audio_chunk_offsets[enc->_audio_chunk_count] = (uint32_t)ftell(f);
+    enc->_audio_chunk_sample_counts[enc->_audio_chunk_count] = sample_count;
+    enc->_audio_chunk_count++;
+    enc->_audio_total_samples += sample_count;
+
+    if (host_is_little_endian()) {
+        fwrite(data, 1, data_size, f);
+    } else {
+        // Convert each 16-bit sample to little endian.
+        const uint16_t *src = (const uint16_t *)data;
+        for (size_t i = 0; i < data_size; i += 2) {
+            WRITE_DYNAMIC({ LE16(src[i]) });
+        }
+    }
+}
+
 void nanomp4h264_flush(nanomp4h264_t *enc) {
     if (enc->_error || enc->_frame_count == 0) return;
 
@@ -338,11 +401,24 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
     uint32_t timescale = enc->_fps_num;
     uint32_t sample_size = enc->_frame_nal_size + 4;
 
+    // Determine if audio exists
+    int has_audio = (enc->_audio_sample_rate > 0 && enc->_audio_channels > 0 && enc->_audio_chunk_count > 0);
+
     // Count stsc entries (run-length encoded: new entry when sample count changes)
     uint32_t stsc_entry_count = 0;
     for (uint32_t i = 0; i < enc->_frame_count; i++) {
         if (i == 0 || enc->_chunk_sample_counts[i] != enc->_chunk_sample_counts[i - 1]) {
             stsc_entry_count++;
+        }
+    }
+
+    // Count audio stsc entries
+    uint32_t audio_stsc_entry_count = 0;
+    if (has_audio) {
+        for (uint32_t i = 0; i < enc->_audio_chunk_count; i++) {
+            if (i == 0 || enc->_audio_chunk_sample_counts[i] != enc->_audio_chunk_sample_counts[i - 1]) {
+                audio_stsc_entry_count++;
+            }
         }
     }
 
@@ -365,7 +441,20 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
     enum { TKHD_SIZE = 92 };
     uint32_t trak_size = 8 + TKHD_SIZE + mdia_size;
     enum { MVHD_SIZE = 108 };
-    uint32_t moov_size = 8 + MVHD_SIZE + trak_size;
+
+    enum { SOWT_SIZE = 36 };
+    enum { SMHD_SIZE = 16 };
+    enum { AUDIO_HDLR_SIZE = 46 };
+    uint32_t audio_stsd_size = 8 + 8 + SOWT_SIZE;
+    uint32_t audio_stsc_size = 16 + 12 * audio_stsc_entry_count;
+    uint32_t audio_stco_size = 16 + 4 * enc->_audio_chunk_count;
+    uint32_t audio_stbl_size = 8 + audio_stsd_size + STTS_SIZE + audio_stsc_size + STSZ_SIZE + audio_stco_size;
+    uint32_t audio_minf_size = 8 + SMHD_SIZE + DINF_SIZE + audio_stbl_size;
+    uint32_t audio_mdia_size = 8 + MDHD_SIZE + AUDIO_HDLR_SIZE + audio_minf_size;
+    uint32_t audio_trak_size = has_audio ? 8 + TKHD_SIZE + audio_mdia_size : 0;
+
+    uint32_t moov_size = 8 + MVHD_SIZE + trak_size + audio_trak_size;
+    uint32_t next_track_id = has_audio ? 3 : 2;
 
     WRITE_DYNAMIC({
         // moov
@@ -404,10 +493,10 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
         // pre_defined (24 bytes)
         BE32(0), BE32(0), BE32(0),
         BE32(0), BE32(0), BE32(0),
-        BE32(2),                 // next_track_id
     });
-
     WRITE_DYNAMIC({
+        BE32(next_track_id),     // next_track_id
+
         // trak
         BE32(trak_size),
     });
@@ -637,6 +726,197 @@ void nanomp4h264_flush(nanomp4h264_t *enc) {
         WRITE_DYNAMIC({ BE32(enc->_chunk_offsets[i]) });
     }
 
+    // Write audio track if present
+    if (has_audio) {
+        uint32_t audio_timescale = enc->_audio_sample_rate;
+        uint32_t audio_duration = (uint32_t)enc->_audio_total_samples;
+        uint32_t audio_sample_size = 2 * enc->_audio_channels;
+        // Duration in tkhd (movie timescale)
+        uint32_t tkhd_audio_duration = (uint32_t)(((uint64_t)enc->_audio_total_samples * timescale) / audio_timescale);
+
+        WRITE_DYNAMIC({
+            // trak (audio)
+            BE32(audio_trak_size),
+        });
+        WRITE_CONST({
+            't', 'r', 'a', 'k',
+
+            // tkhd
+            BE32(TKHD_SIZE),         // size
+            't', 'k', 'h', 'd',      // box type
+            BE32(0x03),              // version, flags (enabled + in_movie)
+            BE32(0),                 // creation_time
+            BE32(0),                 // modification_time
+            BE32(2),                 // track_id
+            BE32(0),                 // reserved
+        });
+        WRITE_DYNAMIC({
+            BE32(tkhd_audio_duration),
+        });
+        WRITE_CONST({
+            BE32(0),                 // reserved
+            BE32(0),                 // reserved
+            BE16(0),                 // layer
+            BE16(0),                 // alternate_group
+            BE16(0x0100),            // volume (1.0 for audio)
+            BE16(0),                 // reserved
+            // Identity matrix (36 bytes)
+            BE32(0x00010000),        // a
+            BE32(0),                 // b
+            BE32(0),                 // u
+            BE32(0),                 // c
+            BE32(0x00010000),        // d
+            BE32(0),                 // v
+            BE32(0),                 // x
+            BE32(0),                 // y
+            BE32(0x40000000),        // w
+            BE32(0),                 // width (0 for audio)
+            BE32(0),                 // height (0 for audio)
+        });
+
+        WRITE_DYNAMIC({
+            // mdia
+            BE32(audio_mdia_size),
+        });
+        WRITE_CONST({
+            'm', 'd', 'i', 'a',
+
+            // mdhd
+            BE32(MDHD_SIZE),         // size
+            'm', 'd', 'h', 'd',      // box type
+            BE32(0),                 // version, flags
+            BE32(0),                 // creation_time
+            BE32(0),                 // modification_time
+        });
+        WRITE_DYNAMIC({
+            BE32(audio_timescale),
+            BE32(audio_duration),
+        });
+        WRITE_CONST({
+            BE16(0x55C4),            // language ("und")
+            BE16(0),                 // pre_defined
+
+            // hdlr (sound)
+            BE32(AUDIO_HDLR_SIZE),   // size
+            'h', 'd', 'l', 'r',      // box type
+            BE32(0),                 // version, flags
+            BE32(0),                 // pre_defined
+            's', 'o', 'u', 'n',      // handler_type
+            BE32(0),                 // reserved
+            BE32(0),                 // reserved
+            BE32(0),                 // reserved
+            'S', 'o', 'u', 'n', 'd', 'H', 'a', 'n', 'd', 'l', 'e', 'r', 0x00, 0x00,  // name (14 bytes with NUL padding)
+        });
+
+        WRITE_DYNAMIC({
+            // minf
+            BE32(audio_minf_size),
+        });
+        WRITE_CONST({
+            'm', 'i', 'n', 'f',
+
+            // smhd
+            BE32(SMHD_SIZE),         // size
+            's', 'm', 'h', 'd',      // box type
+            BE32(0),                 // version, flags
+            BE16(0),                 // balance
+            BE16(0),                 // reserved
+
+            // dinf + dref
+            BE32(DINF_SIZE),         // dinf size
+            'd', 'i', 'n', 'f',      // dinf box type
+            BE32(DREF_SIZE),         // dref size
+            'd', 'r', 'e', 'f',      // dref box type
+            BE32(0),                 // version, flags
+            BE32(1),                 // entry_count
+            BE32(12),                // url size
+            'u', 'r', 'l', ' ',      // url box type
+            BE32(1),                 // flags (self-contained)
+        });
+
+        WRITE_DYNAMIC({
+            // stbl
+            BE32(audio_stbl_size),
+        });
+        WRITE_CONST({
+            's', 't', 'b', 'l',
+        });
+
+        WRITE_DYNAMIC({
+            // stsd
+            BE32(audio_stsd_size),
+        });
+        WRITE_CONST({
+            's', 't', 's', 'd',      // box type
+            BE32(0),                 // version, flags
+            BE32(1),                 // entry_count
+
+            // sowt (PCM16LE sample entry)
+            BE32(SOWT_SIZE),
+            's', 'o', 'w', 't',      // type (little-endian PCM)
+            BE32(0),                 // reserved
+            BE16(0),                 // reserved
+            BE16(1),                 // data_reference_index
+            BE16(0),                 // version
+            BE16(0),                 // revision
+            BE32(0),                 // vendor
+        });
+        WRITE_DYNAMIC({
+            BE16(enc->_audio_channels),
+            BE16(16),                // sampleSize (bits)
+            BE16(0),                 // compressionID
+            BE16(0),                 // packetSize
+            BE32(enc->_audio_sample_rate << 16),  // sampleRate (16.16 fixed)
+        });
+
+        WRITE_CONST({
+            // stts
+            BE32(STTS_SIZE),         // size
+            's', 't', 't', 's',      // box type
+            BE32(0),                 // version, flags
+            BE32(1),                 // entry_count
+        });
+        WRITE_DYNAMIC({
+            BE32((uint32_t)enc->_audio_total_samples),
+            BE32(1),                 // delta=1 (each sample is 1 time unit)
+
+            // stsc
+            BE32(audio_stsc_size),   // size
+            's', 't', 's', 'c',
+            BE32(0),                 // version, flags
+            BE32(audio_stsc_entry_count),  // entry_count
+        });
+        for (uint32_t i = 0; i < enc->_audio_chunk_count; i++) {
+            if (i == 0 || enc->_audio_chunk_sample_counts[i] != enc->_audio_chunk_sample_counts[i - 1]) {
+                WRITE_DYNAMIC({
+                    BE32(i + 1),                              // first_chunk (1-indexed)
+                    BE32(enc->_audio_chunk_sample_counts[i]), // samples_per_chunk
+                    BE32(1),                                  // sample_description_index
+                });
+            }
+        }
+
+        WRITE_CONST({
+            // stsz
+            BE32(STSZ_SIZE),         // size
+            's', 't', 's', 'z',      // box type
+            BE32(0),                 // version, flags
+        });
+        WRITE_DYNAMIC({
+            BE32(audio_sample_size), // sample_size (constant: 2 * channels)
+            BE32((uint32_t)enc->_audio_total_samples),
+
+            // stco
+            BE32(audio_stco_size),   // size
+            's', 't', 'c', 'o',
+            BE32(0),                 // version, flags
+            BE32(enc->_audio_chunk_count), // entry_count
+        });
+        for (uint32_t i = 0; i < enc->_audio_chunk_count; i++) {
+            WRITE_DYNAMIC({ BE32(enc->_audio_chunk_offsets[i]) });
+        }
+    }
+
     // Fix mdat size
     long final_pos = ftell(f);
     uint32_t mdat_size = (uint32_t)(end_pos - enc->_mdat_start_pos);
@@ -658,6 +938,10 @@ void nanomp4h264_close(nanomp4h264_t *enc) {
     enc->_chunk_offsets = NULL;
     enc->_chunk_sample_counts = NULL;
     enc->_chunk_offsets_capacity = 0;
+    free(enc->_audio_chunk_offsets);
+    free(enc->_audio_chunk_sample_counts);
+    enc->_audio_chunk_offsets = NULL;
+    enc->_audio_chunk_sample_counts = NULL;
 }
 
 int nanomp4h264_get_error(const nanomp4h264_t *enc) {
